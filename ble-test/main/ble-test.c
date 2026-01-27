@@ -145,6 +145,14 @@ static size_t g_total_payloads = 0;  /* 有效 payload 总数（len>0） */
 static bool g_scan_rsp_configured = false;
 static volatile bool g_adv_data_busy = false;
 static esp_timer_handle_t g_timer = NULL;
+static bool g_ble_ready = false;
+static bool g_timer_started = false;
+
+/* 对外暴露的手动切换接口（group: 0=vibrate, 1=swing；slot: 0-9） */
+esp_err_t ext_adv_switch_state(int group, int slot);
+esp_err_t ext_adv_init(void);
+esp_err_t ext_adv_start_auto(uint64_t period_us);
+esp_err_t ext_adv_stop_auto(void);
 
 /* 扩展广播参数：这里用“较通用”的可连/可扫配置，你可以按抓包进一步微调 */
 static esp_ble_gap_ext_adv_params_t g_ext_adv_params = {
@@ -191,6 +199,34 @@ static const adv_payload_t *get_payload_by_index(int index, int *out_group, int 
         }
     }
     return NULL;
+}
+
+static int flatten_index(int group, int slot)
+{
+    if (group < 0 || group >= (int)(sizeof(g_groups) / sizeof(g_groups[0]))) {
+        return -1;
+    }
+    if (slot < 0 || slot >= (int)g_groups[group].count) {
+        return -1;
+    }
+    if (g_groups[group].list[slot].data == NULL || g_groups[group].list[slot].len == 0) {
+        return -1;
+    }
+
+    int idx = 0;
+    for (int g = 0; g < (int)(sizeof(g_groups) / sizeof(g_groups[0])); ++g) {
+        for (int i = 0; i < (int)g_groups[g].count; ++i) {
+            const adv_payload_t *p = &g_groups[g].list[i];
+            if (p->data == NULL || p->len == 0) {
+                continue;
+            }
+            if (g == group && i == slot) {
+                return idx;
+            }
+            ++idx;
+        }
+    }
+    return -1;
 }
 
 static esp_err_t set_adv_data_for_state(int state)
@@ -357,12 +393,39 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
     }
 }
 
-void app_main(void)
+/* 手动切换到指定组/槽的 payload，并停止自动轮询定时器 */
+esp_err_t ext_adv_switch_state(int group, int slot)
 {
+    int idx = flatten_index(group, slot);
+    if (idx < 0) {
+        ESP_LOGE(TAG, "Invalid group=%d slot=%d", group, slot);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (g_adv_data_busy) {
+        ESP_LOGW(TAG, "Busy, cannot switch now");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (g_timer) {
+        esp_timer_stop(g_timer);
+    }
+
+    stop_ext_adv();
+    g_state = idx;
+    return set_adv_data_for_state(g_state);
+}
+
+/* 初始化 BLE 控制器/协议栈、注册 GAP 回调、设置参数并预加载首帧 */
+esp_err_t ext_adv_init(void)
+{
+    if (g_ble_ready) {
+        return ESP_OK;
+    }
+
     g_total_payloads = count_valid_payloads();
     if (g_total_payloads == 0) {
         ESP_LOGE(TAG, "No payloads defined, abort");
-        return;
+        return ESP_ERR_INVALID_STATE;
     }
 
     esp_err_t ret = nvs_flash_init();
@@ -385,11 +448,55 @@ void app_main(void)
     /* 设置扩展广播参数（会触发 SET_PARAMS_COMPLETE 事件） */
     ESP_ERROR_CHECK(esp_ble_gap_ext_adv_set_params(g_adv_handle, &g_ext_adv_params));
 
-    /* 定时切换 3 种状态（你可以改成按键/串口命令触发） */
-    const esp_timer_create_args_t targs = {
-        .callback = &update_timer_cb,
-        .name = "adv_update",
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&targs, &g_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(g_timer, 800 * 1000)); // 每 800ms 切一次
+    g_ble_ready = true;
+    return ESP_OK;
 }
+
+/* 启动自动轮播定时器（微秒），已在运行则先停止再启动 */
+esp_err_t ext_adv_start_auto(uint64_t period_us)
+{
+    if (!g_ble_ready) {
+        ESP_LOGE(TAG, "Call ext_adv_init() first");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (g_timer && g_timer_started) {
+        esp_timer_stop(g_timer);
+        g_timer_started = false;
+    }
+
+    if (g_timer == NULL) {
+        const esp_timer_create_args_t targs = {
+            .callback = &update_timer_cb,
+            .name = "adv_update",
+        };
+        ESP_ERROR_CHECK(esp_timer_create(&targs, &g_timer));
+    }
+
+    ESP_ERROR_CHECK(esp_timer_start_periodic(g_timer, period_us));
+    g_timer_started = true;
+    return ESP_OK;
+}
+
+esp_err_t ext_adv_stop_auto(void)
+{
+    if (g_timer && g_timer_started) {
+        esp_timer_stop(g_timer);
+        g_timer_started = false;
+    }
+    return ESP_OK;
+}
+
+#ifndef EXT_ADV_DEMO_APP_MAIN
+#define EXT_ADV_DEMO_APP_MAIN 1
+#endif
+
+#if EXT_ADV_DEMO_APP_MAIN
+/* Demo 入口，方便本例独立跑通；集成到系统时可以关闭宏或直接移除 */
+void app_main(void)
+{
+    ESP_ERROR_CHECK(ext_adv_init());
+    ESP_ERROR_CHECK(ext_adv_start_auto(1000 * 1000)); // 每 1000ms 切一次
+
+}
+#endif
