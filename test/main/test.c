@@ -4,6 +4,7 @@
 
 #include "esp_log.h"
 #include "esp_err.h"
+#include "nvs_flash.h"
 
 #include "driver/rmt_tx.h"
 #include "led_strip.h"
@@ -94,14 +95,27 @@ static void app_init_devices(led_strip_handle_t *led_strip, mcp_h11_t *mcp, dac7
     ESP_ERROR_CHECK(ble_belt_init());
 }
 
+static esp_err_t nvs_init(void)
+{
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    return ret;
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "====== Boot ======");
+
+    ESP_ERROR_CHECK(nvs_init());
 
     led_strip_handle_t led_strip = NULL;
     mcp_h11_t mcp_h11 = {0};
     dac7571_t dac7571 = {0};
     pwm_ledc_t motors = {0};
+
     app_init_devices(&led_strip, &mcp_h11, &dac7571, &motors);
 
     uint16_t dac_code = 0;
@@ -132,10 +146,9 @@ void app_main(void)
         ESP_ERROR_CHECK(pwm_ledc_set_permille(&motors, 2, sp));
         ESP_ERROR_CHECK(pwm_ledc_set_permille(&motors, 3, sp));
 
-        ble_belt = (ble_belt + 1) % 10;
-        ESP_ERROR_CHECK(ble_belt_send_vibrate(ble_belt));
-        vTaskDelay(pdMS_TO_TICKS(200));
+        ble_belt = (ble_belt + 3) % 10;
         ESP_ERROR_CHECK(ble_belt_send_swing(ble_belt));
+        ESP_ERROR_CHECK(ble_belt_send_vibrate(ble_belt));
 
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
