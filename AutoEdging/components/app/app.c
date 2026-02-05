@@ -11,6 +11,9 @@
 #include "esp_check.h"
 #include "nvs_flash.h"
 #include "esp_timer.h"
+#include "sdkconfig.h"
+
+#include "led_strip.h"
 
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -23,6 +26,7 @@
 #include "dev_dac7571.h"
 #include "act_pwm_ledc.h"
 #include "ble_belt.h"
+#include "game_engine.h"
 
 #include "control_api.h"
 #include "telemetry.h"
@@ -39,6 +43,7 @@ static const char *TAG = "app";
 #define M1_GPIO             GPIO_NUM_11
 #define M2_GPIO             GPIO_NUM_12
 #define M3_GPIO             GPIO_NUM_13
+#define STATUS_LED_GPIO     GPIO_NUM_38
 
 #define TELEMETRY_MAX_SEC   120
 #define TELEMETRY_MAX_HZ    50
@@ -52,12 +57,154 @@ static control_service_t s_service;
 static telemetry_t s_telemetry;
 static telemetry_point_t s_telemetry_buf[TELEMETRY_MAX_POINTS];
 static SemaphoreHandle_t s_i2c_mutex = NULL;
+static game_engine_t s_game = {0};
+static led_strip_handle_t s_led = NULL;
+static volatile bool s_wifi_connected = false;
+static volatile bool s_wifi_failed = false;
+
+static esp_err_t status_led_init(void);
+static void status_led_set(uint8_t r, uint8_t g, uint8_t b);
+
+typedef enum {
+    LED_MODE_WIFI_WAIT = 0,
+    LED_MODE_WIFI_FAIL,
+    LED_MODE_IDLE,
+    LED_MODE_PAUSED,
+    LED_MODE_CALM,
+    LED_MODE_MIDDLE,
+    LED_MODE_EDGING,
+    LED_MODE_DELAY,
+} led_mode_t;
+
+static led_mode_t led_mode_from_status(void)
+{
+    if (s_wifi_failed) {
+        return LED_MODE_WIFI_FAIL;
+    }
+    if (!s_wifi_connected) {
+        return LED_MODE_WIFI_WAIT;
+    }
+
+    game_status_t st = {0};
+    game_engine_get_status(&s_game, &st);
+    if (!st.running) {
+        return LED_MODE_IDLE;
+    }
+    if (st.paused) {
+        return LED_MODE_PAUSED;
+    }
+    switch (st.state) {
+    case GAME_STATE_INITIAL_CALM:
+    case GAME_STATE_SUB_CALM:
+        return LED_MODE_CALM;
+    case GAME_STATE_MIDDLE:
+        return LED_MODE_MIDDLE;
+    case GAME_STATE_EDGING:
+        return LED_MODE_EDGING;
+    case GAME_STATE_DELAY:
+        return LED_MODE_DELAY;
+    default:
+        return LED_MODE_IDLE;
+    }
+}
+
+static void led_task(void *arg)
+{
+    (void)arg;
+    led_mode_t mode = LED_MODE_WIFI_WAIT;
+    bool on = true;
+    int64_t last_toggle_ms = 0;
+
+    while (1) {
+        led_mode_t next = led_mode_from_status();
+        if (next != mode) {
+            mode = next;
+            on = true;
+            last_toggle_ms = 0;
+        }
+
+        uint8_t r = 0, g = 0, b = 0;
+        int period_ms = 0;
+
+        switch (mode) {
+        case LED_MODE_WIFI_WAIT:
+            r = 255; g = 180; b = 0; period_ms = 0; // yellow slow blink
+            break;
+        case LED_MODE_WIFI_FAIL:
+            r = 255; g = 0; b = 0; period_ms = 0; // red steady
+            break;
+        case LED_MODE_IDLE:
+            r = 0; g = 120; b = 255; period_ms = 0; // green steady
+            break;
+        case LED_MODE_PAUSED:
+            r = 0; g = 120; b = 255; period_ms = 600; // blue slow blink
+            break;
+        case LED_MODE_CALM:
+            r = 0; g = 255; b = 0; period_ms = 600; // green slow blink
+            break;
+        case LED_MODE_MIDDLE:
+            r = 255; g = 180; b = 0; period_ms = 250; // yellow fast blink
+            break;
+        case LED_MODE_EDGING:
+            r = 255; g = 5; b = 0; period_ms = 200; // red fast blink
+            break;
+        case LED_MODE_DELAY:
+            r = 180; g = 0; b = 255; period_ms = 250; // purple fast blink
+            break;
+        default:
+            break;
+        }
+
+        if (period_ms > 0) {
+            int64_t now_ms = esp_timer_get_time() / 1000;
+            if (last_toggle_ms == 0 || (now_ms - last_toggle_ms) >= period_ms) {
+                on = !on;
+                last_toggle_ms = now_ms;
+            }
+            if (on) {
+                status_led_set(r, g, b);
+            } else {
+                status_led_set(0, 0, 0);
+            }
+        } else {
+            status_led_set(r, g, b);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(120));
+    }
+}
 
 static EventGroupHandle_t s_wifi_event_group;
 static int s_wifi_retry = 0;
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
+
+static esp_err_t status_led_init(void)
+{
+    led_strip_config_t strip_config = {
+        .strip_gpio_num = STATUS_LED_GPIO,
+        .max_leds = 1,
+    };
+    led_strip_rmt_config_t rmt_config = {
+        .resolution_hz = 10 * 1000 * 1000,
+        .flags.with_dma = false,
+    };
+    esp_err_t err = led_strip_new_rmt_device(&strip_config, &rmt_config, &s_led);
+    if (err == ESP_OK && s_led) {
+        led_strip_clear(s_led);
+    }
+    return err;
+}
+
+static void status_led_set(uint8_t r, uint8_t g, uint8_t b)
+{
+    if (!s_led) {
+        return;
+    }
+    led_strip_set_pixel(s_led, 0, g, r, b);
+    led_strip_refresh(s_led);
+}
 
 static esp_err_t nvs_init(void)
 {
@@ -121,6 +268,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        s_wifi_connected = false;
+        s_wifi_failed = false;
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         if (s_wifi_retry < CONFIG_APP_WIFI_MAX_RETRY) {
@@ -129,12 +278,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
             ESP_LOGW(TAG, "retrying wifi (%d)", s_wifi_retry);
         } else {
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+            s_wifi_failed = true;
+            s_wifi_connected = false;
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
         s_wifi_retry = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        s_wifi_connected = true;
+        s_wifi_failed = false;
     }
 }
 
@@ -247,6 +400,11 @@ static void sensor_task(void *arg)
                 .temp_c = sample.temp_c,
             };
             telemetry_push(&s_telemetry, &tp);
+#ifdef CONFIG_APP_DEBUG_IO
+            ESP_LOGI(TAG, "io: mcp_h11 p=%.3f kPa t=%.2f C status=0x%02X",
+                     (double)sample.pressure_kpa, (double)sample.temp_c, sample.status);
+#endif
+            game_engine_on_sample(&s_game, sample.pressure_kpa, ts_ms);
         } else {
             if ((ts_ms - last_log_ms) > 1000) {
                 ESP_LOGW(TAG, "mcp read failed: %s", esp_err_to_name(err));
@@ -262,6 +420,11 @@ void app_start(void)
 {
     ESP_LOGI(TAG, "booting...");
     ESP_ERROR_CHECK(nvs_init());
+    if (status_led_init() == ESP_OK) {
+        status_led_set(255, 180, 0);
+    } else {
+        ESP_LOGW(TAG, "status led init failed");
+    }
 
     s_i2c_mutex = xSemaphoreCreateMutex();
     if (!s_i2c_mutex) {
@@ -277,6 +440,13 @@ void app_start(void)
         control_config_set_defaults(&cfg);
         control_config_save(&cfg);
     }
+    cfg.dac_code = 0;
+    cfg.dac_pd = DAC7571_PD_NORMAL;
+    cfg.ble_swing = 0;
+    cfg.ble_vibrate = 0;
+    for (int i = 0; i < 4; i++) {
+        cfg.pwm_permille[i] = 0;
+    }
 
     control_service_hw_t hw = {
         .dac = &s_dac,
@@ -284,6 +454,20 @@ void app_start(void)
         .i2c_mutex = s_i2c_mutex,
     };
     ESP_ERROR_CHECK(control_service_init(&s_service, &hw, &cfg));
+
+    game_config_t game_cfg = {0};
+    err = game_config_load(&game_cfg);
+    if (err != ESP_OK || game_config_validate(&game_cfg, NULL, 0) != ESP_OK) {
+        game_config_set_defaults(&game_cfg);
+        game_config_save(&game_cfg);
+    }
+    game_engine_hw_t game_hw = {
+        .dac = &s_dac,
+        .pwm = &s_pwm,
+        .i2c_mutex = s_i2c_mutex,
+        .led = s_led,
+    };
+    ESP_ERROR_CHECK(game_engine_init(&s_game, &game_hw, &game_cfg));
 
     telemetry_init(&s_telemetry, s_telemetry_buf, TELEMETRY_MAX_POINTS);
 
@@ -294,10 +478,12 @@ void app_start(void)
     web_server_ctx_t ws_ctx = {
         .control = &s_service,
         .telemetry = &s_telemetry,
+        .game = &s_game,
     };
     ESP_ERROR_CHECK(web_server_start(&ws_ctx));
 
     xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 5, NULL);
+    xTaskCreate(led_task, "led_task", 2048, NULL, 4, NULL);
 
     ESP_LOGI(TAG, "app started");
 }

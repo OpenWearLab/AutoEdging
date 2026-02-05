@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "sdkconfig.h"
 
 #define CONTROL_NVS_NAMESPACE   "control"
 #define CONTROL_NVS_KEY_CFG     "cfg"
@@ -20,9 +21,9 @@
 #define CONTROL_WINDOW_MAX_SEC     (120)
 #define CONTROL_PWM_MIN            (0)
 #define CONTROL_PWM_MAX            (1000)
-#define CONTROL_DAC_MIN            (0)
+// #define CONTROL_DAC_MIN            (0)
 #define CONTROL_DAC_MAX            (4095)
-#define CONTROL_BLE_MIN            (0)
+// #define CONTROL_BLE_MIN            (0)
 #define CONTROL_BLE_MAX            (10)
 
 static const char *TAG = "control_api";
@@ -81,20 +82,20 @@ esp_err_t control_config_validate(const control_config_t *cfg, char *err_msg, si
         return validate_range_bool(false, "window_sec out of range", err_msg, err_len);
     }
     for (int i = 0; i < 4; i++) {
-        if (cfg->pwm_permille[i] < CONTROL_PWM_MIN || cfg->pwm_permille[i] > CONTROL_PWM_MAX) {
+        if (cfg->pwm_permille[i] > CONTROL_PWM_MAX) {
             return validate_range_bool(false, "pwm_permille out of range", err_msg, err_len);
         }
     }
-    if (cfg->dac_code < CONTROL_DAC_MIN || cfg->dac_code > CONTROL_DAC_MAX) {
+    if (cfg->dac_code > CONTROL_DAC_MAX) {
         return validate_range_bool(false, "dac_code out of range", err_msg, err_len);
     }
     if ((int)cfg->dac_pd < 0 || (int)cfg->dac_pd > 3) {
         return validate_range_bool(false, "dac_pd out of range", err_msg, err_len);
     }
-    if (cfg->ble_swing < CONTROL_BLE_MIN || cfg->ble_swing > CONTROL_BLE_MAX) {
+    if (cfg->ble_swing > CONTROL_BLE_MAX) {
         return validate_range_bool(false, "ble_swing out of range", err_msg, err_len);
     }
-    if (cfg->ble_vibrate < CONTROL_BLE_MIN || cfg->ble_vibrate > CONTROL_BLE_MAX) {
+    if (cfg->ble_vibrate > CONTROL_BLE_MAX) {
         return validate_range_bool(false, "ble_vibrate out of range", err_msg, err_len);
     }
     return ESP_OK;
@@ -165,6 +166,9 @@ static esp_err_t apply_outputs_locked(control_service_t *svc, const control_conf
         if (err != ESP_OK) {
             return err;
         }
+#ifdef CONFIG_APP_DEBUG_IO
+        ESP_LOGI(TAG, "io: dac code=%u pd=%u", cfg->dac_code, (unsigned)cfg->dac_pd);
+#endif
     }
 
     if (svc->hw.pwm) {
@@ -173,6 +177,9 @@ static esp_err_t apply_outputs_locked(control_service_t *svc, const control_conf
             if (err != ESP_OK) {
                 return err;
             }
+#ifdef CONFIG_APP_DEBUG_IO
+            ESP_LOGI(TAG, "io: pwm[%d]=%u", i, cfg->pwm_permille[i]);
+#endif
         }
     }
 
@@ -180,10 +187,16 @@ static esp_err_t apply_outputs_locked(control_service_t *svc, const control_conf
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "ble_swing send failed: %s", esp_err_to_name(err));
     }
+#ifdef CONFIG_APP_DEBUG_IO
+    ESP_LOGI(TAG, "io: ble swing=%u", cfg->ble_swing);
+#endif
     err = ble_belt_send_vibrate(cfg->ble_vibrate);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "ble_vibrate send failed: %s", esp_err_to_name(err));
     }
+#ifdef CONFIG_APP_DEBUG_IO
+    ESP_LOGI(TAG, "io: ble vibrate=%u", cfg->ble_vibrate);
+#endif
 
     return ESP_OK;
 }

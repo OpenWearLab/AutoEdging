@@ -117,6 +117,66 @@ body {
   color: var(--ok);
 }
 
+@keyframes pressure-warn {
+  0% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.5;
+  }
+}
+
+.metric-value.pressure-mid {
+  color: #fbbf24;
+  animation: pressure-warn 1.2s ease-in-out infinite;
+}
+
+.help-btn {
+  margin-left: 6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 16px;
+  padding: 0;
+}
+
+.help-btn:hover {
+  border-color: rgba(0, 210, 255, 0.55);
+  color: rgba(0, 210, 255, 0.85);
+}
+
+.help-popover {
+  position: fixed;
+  z-index: 1000;
+  max-width: 360px;
+  background: rgba(10, 20, 30, 0.96);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 14px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  color: var(--text);
+}
+
+.help-popover-title {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.help-popover-body {
+  font-size: 12px;
+  color: rgba(230, 237, 243, 0.72);
+  line-height: 1.5;
+}
+
 @keyframes pressure-alert {
   0% {
     opacity: 0.35;

@@ -40,7 +40,7 @@
           <div class="output-value" id="dac">code ---, --.- V</div>
         </div>
         <div class="output-item">
-          <div class="output-label">PWM</div>
+          <div class="output-label">跳蛋强度</div>
           <div class="output-value" id="pwm">-- / -- / -- / --</div>
         </div>
         <div class="output-item">
@@ -50,13 +50,141 @@
       </div>
     </section>
 
+    <section class="card game-control">
+      <div class="section-title">游戏控制</div>
+      <div class="output-grid">
+        <div class="output-item">
+          <div class="output-label">状态</div>
+          <div class="output-value" id="game-state">--</div>
+        </div>
+        <div class="output-item">
+          <div class="output-label">运行</div>
+          <div class="output-value" id="game-running">--</div>
+        </div>
+        <div class="output-item">
+          <div class="output-label">强度</div>
+          <div class="output-value" id="game-intensity">--</div>
+        </div>
+        <div class="output-item">
+          <div class="output-label">目标强度</div>
+          <div class="output-value" id="game-target">--</div>
+        </div>
+        <div class="output-item">
+          <div class="output-label">压力 (Avg)</div>
+          <div class="output-value" id="game-pressure">--</div>
+        </div>
+        <div class="output-item">
+          <div class="output-label">中压 / 临界</div>
+          <div class="output-value" id="game-thresholds">--</div>
+        </div>
+        <div class="output-item">
+          <div class="output-label">寸止 / 电击</div>
+          <div class="output-value" id="game-counts">--</div>
+        </div>
+        <div class="output-item">
+          <div class="output-label">刺激时长</div>
+          <div class="output-value" id="game-stim-time">--</div>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="btn-game-start" class="btn primary">开始</button>
+        <button id="btn-game-pause" class="btn">暂停</button>
+        <button id="btn-game-stop" class="btn danger">停止</button>
+        <button id="btn-game-shock" class="btn danger">电击一次</button>
+      </div>
+      <div id="game-toast" class="toast"></div>
+    </section>
+
+    <section class="card game-config">
+      <div class="section-title">游戏参数</div>
+      <div class="form">
+        <div class="field">
+          <label>游戏时长 (分钟)<button type="button" class="help-btn" data-help-title="游戏时长" data-help="达到该时长后自动结束游戏并关闭所有输出。">?</button></label>
+          <input id="game-duration" type="number" min="1" max="120" />
+        </div>
+        <div class="field">
+          <label>临界气压 (kPa)<button type="button" class="help-btn" data-help-title="临界气压" data-help="当气压 P >= 临界气压时进入过载，强度强制为 0，并触发一次电击计数。">?</button></label>
+          <input id="game-critical" type="number" step="0.1" />
+        </div>
+        <div class="field">
+          <label>中间压力 (kPa)<button type="button" class="help-btn" data-help-title="中间压力" data-help="当气压 P > 中间压力时进入中期抑制；过载后必须回落到 P < 中间压力才会开始冷却倒计时。">?</button></label>
+          <input id="game-mid" type="number" step="0.1" />
+        </div>
+        <div class="field">
+          <label>最大强度<button type="button" class="help-btn" data-help-title="最大强度" data-help="目标强度范围 0..最大强度，同时用于跳蛋强度/BLE 的强度映射与分档。">?</button></label>
+          <input id="game-max" type="number" min="1" max="255" />
+        </div>
+        <div class="field">
+          <label>冷静时间 (秒)<button type="button" class="help-btn" data-help-title="冷静时间" data-help="寸止后回落到 P < 中间压力开始计时；倒计时结束才恢复刺激累积。">?</button></label>
+          <input id="game-delay" type="number" min="0" max="120" />
+        </div>
+        <div class="field">
+          <label>强度递增速率上限 (每秒)<button type="button" class="help-btn" data-help-title="递增速率上限" data-help="强度上升时的最大变化速度(每秒)。下降不限制，会立即下调到目标值。">?</button></label>
+          <input id="game-rate" type="number" min="0" max="10" step="0.1" />
+        </div>
+        <div class="field">
+          <label>压力敏感度系数<button type="button" class="help-btn" data-help-title="压力敏感度系数" data-help="用于冷却结束后的基础强度计算：base = max * (P_critical - P) / (P_critical - pressureSensitivity)。">?</button></label>
+          <input id="game-sensitivity" type="number" min="0" max="30" step="0.1" />
+        </div>
+        <div class="field">
+          <label>强度随机扰动 (%)<button type="button" class="help-btn" data-help-title="强度随机扰动" data-help="在累积期给强度乘以随机因子 (1 ± random%)，制造不可预测的波动。">?</button></label>
+          <input id="game-random" type="number" min="0" max="100" />
+        </div>
+        <div class="field">
+          <label>延迟后逐步提升 (每秒)<button type="button" class="help-btn" data-help-title="逐步提升" data-help="在平静/累积阶段每秒增加的基础强度。">?</button></label>
+          <input id="game-increase" type="number" min="0" max="50" step="0.1" />
+        </div>
+        <div class="field">
+          <label>电击电压 (V)<button type="button" class="help-btn" data-help-title="电击电压" data-help="使用Type-C线连接到郊狼的按钮配件Type-C口，使用 DAC 输出电压(<=2.1V)。建议 >1V 直接触发外部模块最大强度；<0.5V 视为不电击。">?</button></label>
+          <input id="game-shock-voltage" type="number" min="0" max="2.1" step="0.1" />
+        </div>
+        <div class="field">
+          <label>中期最低强度<button type="button" class="help-btn" data-help-title="中期最低强度" data-help="MIDDLE 状态强度随压力逼近临界时的下限值(默认 5)。越过临界仍会瞬间降为 0。">?</button></label>
+          <input id="game-mid-min" type="number" min="0" max="255" step="0.1" />
+        </div>
+        <div class="field">
+          <label>跳蛋强度0 最大 (%)<button type="button" class="help-btn" data-help-title="跳蛋强度0 最大" data-help="每路跳蛋的最大输出上限(0..100%)。游戏强度会按比例映射到该上限。">?</button></label>
+          <input id="game-pwm0" type="number" min="0" max="100" step="0.1" />
+        </div>
+        <div class="field">
+          <label>跳蛋强度1 最大 (%)<button type="button" class="help-btn" data-help-title="跳蛋强度1 最大" data-help="每路跳蛋的最大输出上限(0..100%)。游戏强度会按比例映射到该上限。">?</button></label>
+          <input id="game-pwm1" type="number" min="0" max="100" step="0.1" />
+        </div>
+        <div class="field">
+          <label>跳蛋强度2 最大 (%)<button type="button" class="help-btn" data-help-title="跳蛋强度2 最大" data-help="每路跳蛋的最大输出上限(0..100%)。游戏强度会按比例映射到该上限。">?</button></label>
+          <input id="game-pwm2" type="number" min="0" max="100" step="0.1" />
+        </div>
+        <div class="field">
+          <label>跳蛋强度3 最大 (%)<button type="button" class="help-btn" data-help-title="跳蛋强度3 最大" data-help="每路跳蛋的最大输出上限(0..100%)。游戏强度会按比例映射到该上限。">?</button></label>
+          <input id="game-pwm3" type="number" min="0" max="100" step="0.1" />
+        </div>
+        <div class="field">
+          <label>跳蛋强度0 最低 (%)<button type="button" class="help-btn" data-help-title="跳蛋强度0 最低" data-help="当强度>0时的最小输出(0..100%)。用于起振门槛。">?</button></label>
+          <input id="game-pwm0-min" type="number" min="0" max="100" step="0.1" />
+        </div>
+        <div class="field">
+          <label>跳蛋强度1 最低 (%)<button type="button" class="help-btn" data-help-title="跳蛋强度1 最低" data-help="当强度>0时的最小输出(0..100%)。用于起振门槛。">?</button></label>
+          <input id="game-pwm1-min" type="number" min="0" max="100" step="0.1" />
+        </div>
+        <div class="field">
+          <label>跳蛋强度2 最低 (%)<button type="button" class="help-btn" data-help-title="跳蛋强度2 最低" data-help="当强度>0时的最小输出(0..100%)。用于起振门槛。">?</button></label>
+          <input id="game-pwm2-min" type="number" min="0" max="100" step="0.1" />
+        </div>
+        <div class="field">
+          <label>跳蛋强度3 最低 (%)<button type="button" class="help-btn" data-help-title="跳蛋强度3 最低" data-help="当强度>0时的最小输出(0..100%)。用于起振门槛。">?</button></label>
+          <input id="game-pwm3-min" type="number" min="0" max="100" step="0.1" />
+        </div>
+      </div>
+      <div class="actions">
+        <button id="btn-game-save" class="btn primary">保存</button>
+        <button id="btn-game-reset" class="btn danger">恢复默认</button>
+      </div>
+      <div class="toast" id="game-config-toast"></div>
+    </section>
+
     <section class="card config">
       <div class="section-title">参数配置</div>
       <div class="form">
-        <div class="field">
-          <label>压力阈值 (kPa)</label>
-          <input id="cfg-threshold" type="number" step="0.1" />
-        </div>
         <div class="field">
           <label>采样频率 (Hz)</label>
           <input id="cfg-sample" type="number" min="1" max="100" />
@@ -85,20 +213,20 @@
         </div>
 
         <div class="field">
-          <label>PWM0 (permille)</label>
-          <input id="cfg-pwm0" type="number" min="0" max="1000" />
+          <label>跳蛋强度0 (%)</label>
+          <input id="cfg-pwm0" type="number" min="0" max="100" step="0.1" />
         </div>
         <div class="field">
-          <label>PWM1 (permille)</label>
-          <input id="cfg-pwm1" type="number" min="0" max="1000" />
+          <label>跳蛋强度1 (%)</label>
+          <input id="cfg-pwm1" type="number" min="0" max="100" step="0.1" />
         </div>
         <div class="field">
-          <label>PWM2 (permille)</label>
-          <input id="cfg-pwm2" type="number" min="0" max="1000" />
+          <label>跳蛋强度2 (%)</label>
+          <input id="cfg-pwm2" type="number" min="0" max="100" step="0.1" />
         </div>
         <div class="field">
-          <label>PWM3 (permille)</label>
-          <input id="cfg-pwm3" type="number" min="0" max="1000" />
+          <label>跳蛋强度3 (%)</label>
+          <input id="cfg-pwm3" type="number" min="0" max="100" step="0.1" />
         </div>
 
         <div class="field">
@@ -112,7 +240,6 @@
       </div>
 
       <div class="actions">
-        <button id="btn-apply" class="btn">应用</button>
         <button id="btn-save" class="btn primary">保存</button>
         <button id="btn-reset" class="btn danger">恢复默认</button>
       </div>

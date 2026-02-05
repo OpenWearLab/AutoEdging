@@ -16,4 +16,8 @@ config APP_MDNS_HOSTNAME
     string "mDNS Hostname"
     default "autoedging"
 
+config APP_DEBUG_IO
+    bool "Enable IO debug logs"
+    default n
+
 endmenu
