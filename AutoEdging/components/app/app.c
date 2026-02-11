@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include <string.h>
+#include <stdlib.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -9,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "nvs_flash.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
@@ -46,7 +48,7 @@ static const char *TAG = "app";
 #define STATUS_LED_GPIO     GPIO_NUM_38
 
 #define TELEMETRY_MAX_SEC   120
-#define TELEMETRY_MAX_HZ    50
+#define TELEMETRY_MAX_HZ    100
 #define TELEMETRY_MAX_POINTS (TELEMETRY_MAX_SEC * TELEMETRY_MAX_HZ)
 
 static bus_i2c_t s_i2c = {0};
@@ -55,7 +57,7 @@ static dac7571_t s_dac = {0};
 static pwm_ledc_t s_pwm = {0};
 static control_service_t s_service;
 static telemetry_t s_telemetry;
-static telemetry_point_t s_telemetry_buf[TELEMETRY_MAX_POINTS];
+static telemetry_point_t *s_telemetry_buf = NULL;
 static SemaphoreHandle_t s_i2c_mutex = NULL;
 static game_engine_t s_game = {0};
 static led_strip_handle_t s_led = NULL;
@@ -468,6 +470,20 @@ void app_start(void)
         .led = s_led,
     };
     ESP_ERROR_CHECK(game_engine_init(&s_game, &game_hw, &game_cfg));
+
+    // Allocate telemetry buffer from external memory (PSRAM) if available
+    s_telemetry_buf = heap_caps_malloc(TELEMETRY_MAX_POINTS * sizeof(telemetry_point_t), 
+                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_telemetry_buf == NULL) {
+        // Fallback to internal memory if PSRAM not available
+        s_telemetry_buf = malloc(TELEMETRY_MAX_POINTS * sizeof(telemetry_point_t));
+        ESP_ERROR_CHECK(s_telemetry_buf ? ESP_OK : ESP_ERR_NO_MEM);
+        ESP_LOGI(TAG, "Telemetry buffer allocated in internal memory: %zu bytes", 
+                 TELEMETRY_MAX_POINTS * sizeof(telemetry_point_t));
+    } else {
+        ESP_LOGI(TAG, "Telemetry buffer allocated in PSRAM: %zu bytes", 
+                 TELEMETRY_MAX_POINTS * sizeof(telemetry_point_t));
+    }
 
     telemetry_init(&s_telemetry, s_telemetry_buf, TELEMETRY_MAX_POINTS);
 
