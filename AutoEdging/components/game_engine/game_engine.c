@@ -330,11 +330,11 @@ static void game_apply_outputs_locked(game_engine_t *g)
     }
 
     uint8_t swing = 0;
-    if (ratio >= 0.85f) {
+    if (ratio >= 0.65f) {
         swing = 3;
-    } else if (ratio >= 0.60f) {
+    } else if (ratio >= 0.40f) {
         swing = 2;
-    } else if (ratio >= 0.25f) {
+    } else if (ratio >= 0.05f) {
         swing = 1;
     } else {
         swing = 0;
