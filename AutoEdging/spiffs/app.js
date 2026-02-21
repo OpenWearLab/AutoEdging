@@ -424,12 +424,6 @@ function setManualEnabled(enabled) {
   Object.values(el.manual.buttons).forEach((btn) => {
     if (btn) btn.disabled = !enabled;
   });
-  Object.values(el.system.inputs).forEach((input) => {
-    if (input) input.disabled = !enabled;
-  });
-  Object.values(el.system.buttons).forEach((btn) => {
-    if (btn) btn.disabled = !enabled;
-  });
 }
 
 function collectManualConfig() {
@@ -728,7 +722,21 @@ function renderChart() {
     ctx.stroke();
   }
 
-  const { critical } = getGameThresholds();
+  const { mid, critical } = getGameThresholds();
+  if (Number.isFinite(mid)) {
+    const ratio = (mid - minVal) / range;
+    const clamped = Math.min(1, Math.max(0, ratio));
+    const y = h - clamped * h;
+    ctx.save();
+    ctx.setLineDash([6, 6]);
+    ctx.strokeStyle = 'rgba(251, 191, 36, 0.75)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+    ctx.stroke();
+    ctx.restore();
+  }
   if (Number.isFinite(critical)) {
     const ratio = (critical - minVal) / range;
     const clamped = Math.min(1, Math.max(0, ratio));
