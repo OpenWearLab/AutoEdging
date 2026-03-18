@@ -83,9 +83,16 @@ const el = {
       window: document.getElementById('cfg-window'),
       statusLed: document.getElementById('cfg-status-led'),
     },
+    wifi: {
+      state: document.getElementById('wifi-state'),
+      ssid: document.getElementById('wifi-ssid'),
+      ip: document.getElementById('wifi-ip'),
+      provName: document.getElementById('wifi-prov-name'),
+    },
     buttons: {
       save: document.getElementById('btn-system-save'),
       reset: document.getElementById('btn-system-reset'),
+      reprovision: document.getElementById('btn-system-reprovision'),
     },
   },
 };
@@ -134,6 +141,15 @@ const CONTROL_DEFAULTS = {
   bleSwing: 0,
   bleVibrate: 0,
   statusLedEnabled: true,
+};
+
+const WIFI_STATE_TEXT = {
+  connected: '已连接',
+  provisioning: 'BLE 配网中',
+  connecting: '连接中',
+  failed: '连接失败',
+  unprovisioned: '未配网',
+  rebooting: '即将重启',
 };
 
 let chartYMin = CHART_Y_BASE_MIN;
@@ -417,6 +433,26 @@ function updateConfigForm(cfg) {
   renderChart();
 }
 
+function updateWifiStatus(data) {
+  if (!data) return;
+  const stateText = WIFI_STATE_TEXT[data.state] || data.state || '--';
+  if (el.system.wifi.state) {
+    el.system.wifi.state.textContent = stateText;
+  }
+  if (el.system.wifi.ssid) {
+    el.system.wifi.ssid.textContent = data.ssid || '未连接';
+  }
+  if (el.system.wifi.ip) {
+    el.system.wifi.ip.textContent = data.ip_addr || '--';
+  }
+  if (el.system.wifi.provName) {
+    el.system.wifi.provName.textContent = data.service_name || '--';
+  }
+  if (el.system.buttons.reprovision) {
+    el.system.buttons.reprovision.disabled = !!data.reboot_pending;
+  }
+}
+
 function setManualEnabled(enabled) {
   Object.values(el.manual.inputs).forEach((input) => {
     if (input) input.disabled = !enabled;
@@ -657,6 +693,25 @@ async function postSystemConfig(save = true) {
   }
 }
 
+async function postWifiAction(action) {
+  setSystemToast('正在处理...');
+  try {
+    const res = await fetch('/api/system/wifi', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || '操作失败');
+    }
+    updateWifiStatus(data);
+    setSystemToast('Wi-Fi 凭据已清空，设备即将重启并进入 BLE 配网');
+  } catch (err) {
+    setSystemToast(err.message, true);
+  }
+}
+
 function resetManualConfigToDefaults() {
   el.manual.inputs.dacCode.value = CONTROL_DEFAULTS.dacCode;
   el.manual.inputs.dacPd.value = CONTROL_DEFAULTS.dacPd;
@@ -673,6 +728,7 @@ function resetSystemConfigToDefaults() {
   el.system.inputs.sample.value = CONTROL_DEFAULTS.sampleHz;
   el.system.inputs.ws.value = CONTROL_DEFAULTS.wsHz;
   el.system.inputs.window.value = CONTROL_DEFAULTS.windowSec;
+  el.system.inputs.statusLed.value = CONTROL_DEFAULTS.statusLedEnabled ? '1' : '0';
   postSystemConfig(true);
 }
 
@@ -825,11 +881,12 @@ function connectWs() {
 
 async function loadInitial() {
   try {
-    const [cfgRes, stRes, gameCfgRes, gameStRes] = await Promise.all([
+    const [cfgRes, stRes, gameCfgRes, gameStRes, wifiRes] = await Promise.all([
       fetch('/api/config'),
       fetch('/api/status'),
       fetch('/api/game/config'),
       fetch('/api/game/status'),
+      fetch('/api/system/wifi'),
     ]);
     const cfg = await cfgRes.json();
     updateConfigForm(cfg);
@@ -839,6 +896,8 @@ async function loadInitial() {
     updateGameConfigForm(gcfg);
     const gst = await gameStRes.json();
     updateGameStatus(gst);
+    const wifi = await wifiRes.json();
+    updateWifiStatus(wifi);
   } catch (err) {
     setGameToast('加载配置失败', true);
     setManualToast('加载配置失败', true);
@@ -1014,6 +1073,13 @@ el.manual.buttons.bleVibrateStop.addEventListener('click', () => {
 
 el.system.buttons.save.addEventListener('click', () => postSystemConfig(true));
 el.system.buttons.reset.addEventListener('click', () => resetSystemConfigToDefaults());
+el.system.buttons.reprovision.addEventListener('click', () => {
+  const ok = window.confirm('这会清空当前 Wi-Fi 凭据并重启设备。重启后将进入 BLE provisioning 配网模式，是否继续？');
+  if (!ok) {
+    return;
+  }
+  postWifiAction('reprovision_reboot');
+});
 
 el.game.buttons.save.addEventListener('click', () => postGameConfig(true, false));
 el.game.buttons.reset.addEventListener('click', () => postGameConfig(true, true));

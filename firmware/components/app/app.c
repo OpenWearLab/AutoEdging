@@ -5,7 +5,6 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/event_groups.h"
 
 #include "esp_log.h"
 #include "esp_err.h"
@@ -17,9 +16,6 @@
 
 #include "led_strip.h"
 
-#include "esp_event.h"
-#include "esp_netif.h"
-#include "esp_wifi.h"
 #include "esp_spiffs.h"
 #include "mdns.h"
 
@@ -33,6 +29,7 @@
 #include "control_api.h"
 #include "telemetry.h"
 #include "web_server.h"
+#include "wifi_service.h"
 
 static const char *TAG = "app";
 
@@ -61,8 +58,8 @@ static telemetry_point_t *s_telemetry_buf = NULL;
 static SemaphoreHandle_t s_i2c_mutex = NULL;
 static game_engine_t s_game = {0};
 static led_strip_handle_t s_led = NULL;
-static volatile bool s_wifi_connected = false;
-static volatile bool s_wifi_failed = false;
+static volatile bool s_boot_led_active = false;
+static TaskHandle_t s_boot_led_task = NULL;
 
 static esp_err_t status_led_init(void);
 static void status_led_set(uint8_t r, uint8_t g, uint8_t b);
@@ -72,6 +69,7 @@ static void memory_log_task(void *arg);
 
 typedef enum {
     LED_MODE_WIFI_WAIT = 0,
+    LED_MODE_WIFI_PROVISIONING,
     LED_MODE_WIFI_FAIL,
     LED_MODE_IDLE,
     LED_MODE_PAUSED,
@@ -83,10 +81,16 @@ typedef enum {
 
 static led_mode_t led_mode_from_status(void)
 {
-    if (s_wifi_failed) {
+    wifi_service_status_t wifi = {0};
+    wifi_service_get_status(&wifi);
+
+    if (wifi.provisioning) {
+        return LED_MODE_WIFI_PROVISIONING;
+    }
+    if (wifi.connect_failed) {
         return LED_MODE_WIFI_FAIL;
     }
-    if (!s_wifi_connected) {
+    if (!wifi.connected) {
         return LED_MODE_WIFI_WAIT;
     }
 
@@ -113,6 +117,90 @@ static led_mode_t led_mode_from_status(void)
     }
 }
 
+static void render_led_mode(led_mode_t mode, bool *on, int64_t *last_toggle_ms)
+{
+    uint8_t r = 0, g = 0, b = 0;
+    int period_ms = 0;
+
+    switch (mode) {
+    case LED_MODE_WIFI_WAIT:
+        r = 255; g = 180; b = 0; period_ms = 800; // amber blink while trying saved Wi-Fi
+        break;
+    case LED_MODE_WIFI_PROVISIONING:
+        r = 0; g = 220; b = 255; period_ms = 350; // cyan blink while BLE provisioning is active
+        break;
+    case LED_MODE_WIFI_FAIL:
+        r = 255; g = 0; b = 0; period_ms = 0; // red steady
+        break;
+    case LED_MODE_IDLE:
+        r = 0; g = 120; b = 255; period_ms = 0; // blue steady
+        break;
+    case LED_MODE_PAUSED:
+        r = 0; g = 120; b = 255; period_ms = 600; // blue slow blink
+        break;
+    case LED_MODE_CALM:
+        r = 0; g = 255; b = 0; period_ms = 600; // green slow blink
+        break;
+    case LED_MODE_MIDDLE:
+        r = 255; g = 180; b = 0; period_ms = 250; // amber fast blink
+        break;
+    case LED_MODE_EDGING:
+        r = 255; g = 5; b = 0; period_ms = 200; // red fast blink
+        break;
+    case LED_MODE_DELAY:
+        r = 180; g = 0; b = 255; period_ms = 250; // purple fast blink
+        break;
+    default:
+        break;
+    }
+
+    if (period_ms > 0) {
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        if (*last_toggle_ms == 0 || (now_ms - *last_toggle_ms) >= period_ms) {
+            *on = !*on;
+            *last_toggle_ms = now_ms;
+        }
+        if (*on) {
+            status_led_set(r, g, b);
+        } else {
+            status_led_set(0, 0, 0);
+        }
+    } else {
+        status_led_set(r, g, b);
+    }
+}
+
+static void boot_led_task(void *arg)
+{
+    (void)arg;
+    led_mode_t mode = LED_MODE_WIFI_WAIT;
+    bool on = true;
+    int64_t last_toggle_ms = 0;
+
+    while (s_boot_led_active) {
+        wifi_service_status_t wifi = {0};
+        wifi_service_get_status(&wifi);
+
+        led_mode_t next = LED_MODE_WIFI_WAIT;
+        if (wifi.provisioning) {
+            next = LED_MODE_WIFI_PROVISIONING;
+        } else if (wifi.connect_failed) {
+            next = LED_MODE_WIFI_FAIL;
+        }
+        if (next != mode) {
+            mode = next;
+            on = true;
+            last_toggle_ms = 0;
+        }
+
+        render_led_mode(mode, &on, &last_toggle_ms);
+        vTaskDelay(pdMS_TO_TICKS(120));
+    }
+
+    s_boot_led_task = NULL;
+    vTaskDelete(NULL);
+}
+
 static void led_task(void *arg)
 {
     (void)arg;
@@ -136,62 +224,10 @@ static void led_task(void *arg)
             last_toggle_ms = 0;
         }
 
-        uint8_t r = 0, g = 0, b = 0;
-        int period_ms = 0;
-
-        switch (mode) {
-        case LED_MODE_WIFI_WAIT:
-            r = 255; g = 180; b = 0; period_ms = 0; // yellow slow blink
-            break;
-        case LED_MODE_WIFI_FAIL:
-            r = 255; g = 0; b = 0; period_ms = 0; // red steady
-            break;
-        case LED_MODE_IDLE:
-            r = 0; g = 120; b = 255; period_ms = 0; // green steady
-            break;
-        case LED_MODE_PAUSED:
-            r = 0; g = 120; b = 255; period_ms = 600; // blue slow blink
-            break;
-        case LED_MODE_CALM:
-            r = 0; g = 255; b = 0; period_ms = 600; // green slow blink
-            break;
-        case LED_MODE_MIDDLE:
-            r = 255; g = 180; b = 0; period_ms = 250; // yellow fast blink
-            break;
-        case LED_MODE_EDGING:
-            r = 255; g = 5; b = 0; period_ms = 200; // red fast blink
-            break;
-        case LED_MODE_DELAY:
-            r = 180; g = 0; b = 255; period_ms = 250; // purple fast blink
-            break;
-        default:
-            break;
-        }
-
-        if (period_ms > 0) {
-            int64_t now_ms = esp_timer_get_time() / 1000;
-            if (last_toggle_ms == 0 || (now_ms - last_toggle_ms) >= period_ms) {
-                on = !on;
-                last_toggle_ms = now_ms;
-            }
-            if (on) {
-                status_led_set(r, g, b);
-            } else {
-                status_led_set(0, 0, 0);
-            }
-        } else {
-            status_led_set(r, g, b);
-        }
-
+        render_led_mode(mode, &on, &last_toggle_ms);
         vTaskDelay(pdMS_TO_TICKS(120));
     }
 }
-
-static EventGroupHandle_t s_wifi_event_group;
-static int s_wifi_retry = 0;
-
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT      BIT1
 
 static esp_err_t status_led_init(void)
 {
@@ -274,75 +310,6 @@ static esp_err_t app_init_devices(void)
     ESP_RETURN_ON_ERROR(pwm_ledc_init(&s_pwm, &pwm_cfg), TAG, "pwm init failed");
 
     ESP_RETURN_ON_ERROR(ble_belt_init(), TAG, "ble init failed");
-    return ESP_OK;
-}
-
-static void wifi_event_handler(void *arg, esp_event_base_t event_base,
-                               int32_t event_id, void *event_data)
-{
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        s_wifi_connected = false;
-        s_wifi_failed = false;
-        esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_wifi_retry < CONFIG_APP_WIFI_MAX_RETRY) {
-            esp_wifi_connect();
-            s_wifi_retry++;
-            ESP_LOGW(TAG, "retrying wifi (%d)", s_wifi_retry);
-        } else {
-            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-            s_wifi_failed = true;
-            s_wifi_connected = false;
-        }
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
-        s_wifi_retry = 0;
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-        s_wifi_connected = true;
-        s_wifi_failed = false;
-    }
-}
-
-static esp_err_t wifi_init_sta(void)
-{
-    s_wifi_event_group = xEventGroupCreate();
-
-    ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "netif init failed");
-    esp_err_t err = esp_event_loop_create_default();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        return err;
-    }
-
-    esp_netif_create_default_wifi_sta();
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "wifi init failed");
-
-    ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(WIFI_EVENT,
-                                                            ESP_EVENT_ANY_ID,
-                                                            &wifi_event_handler,
-                                                            NULL,
-                                                            NULL), TAG, "wifi handler failed");
-    ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(IP_EVENT,
-                                                            IP_EVENT_STA_GOT_IP,
-                                                            &wifi_event_handler,
-                                                            NULL,
-                                                            NULL), TAG, "ip handler failed");
-
-    wifi_config_t wifi_config = {0};
-    snprintf((char *)wifi_config.sta.ssid, sizeof(wifi_config.sta.ssid), "%s", CONFIG_APP_WIFI_SSID);
-    snprintf((char *)wifi_config.sta.password, sizeof(wifi_config.sta.password), "%s", CONFIG_APP_WIFI_PASSWORD);
-    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-    if (strlen(CONFIG_APP_WIFI_PASSWORD) == 0) {
-        wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
-    }
-
-    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "wifi mode failed");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_config), TAG, "wifi config failed");
-    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start failed");
-
-    ESP_LOGI(TAG, "wifi init done, connecting to %s", CONFIG_APP_WIFI_SSID);
     return ESP_OK;
 }
 
@@ -484,9 +451,16 @@ void app_start(void)
     ESP_LOGI(TAG, "booting...");
     ESP_ERROR_CHECK(nvs_init());
     if (status_led_init() == ESP_OK) {
-        status_led_set(255, 180, 0);
+        s_boot_led_active = true;
+        xTaskCreate(boot_led_task, "boot_led", 2048, NULL, 3, &s_boot_led_task);
     } else {
         ESP_LOGW(TAG, "status led init failed");
+    }
+
+    ESP_ERROR_CHECK(wifi_service_start());
+    s_boot_led_active = false;
+    while (s_boot_led_task) {
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 
     s_i2c_mutex = xSemaphoreCreateMutex();
@@ -548,7 +522,6 @@ void app_start(void)
 
     telemetry_init(&s_telemetry, s_telemetry_buf, TELEMETRY_MAX_POINTS);
 
-    ESP_ERROR_CHECK(wifi_init_sta());
     ESP_ERROR_CHECK(mdns_init_app());
     ESP_ERROR_CHECK(spiffs_init());
 

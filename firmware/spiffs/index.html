@@ -349,11 +349,29 @@
               <option value="0">关闭</option>
             </select>
           </div>
+          <div class="field">
+            <label>Wi-Fi 状态</label>
+            <div id="wifi-state" class="field-static">--</div>
+          </div>
+          <div class="field">
+            <label>当前 SSID</label>
+            <div id="wifi-ssid" class="field-static">--</div>
+          </div>
+          <div class="field">
+            <label>IPv4 地址</label>
+            <div id="wifi-ip" class="field-static">--</div>
+          </div>
+          <div class="field">
+            <label>BLE 配网设备名</label>
+            <div id="wifi-prov-name" class="field-static">--</div>
+            <div class="field-hint">清空凭据并重启后，用 Espressif BLE provisioning app 连接这个设备名重新配网。</div>
+          </div>
         </div>
 
         <div class="actions">
           <button id="btn-system-save" class="btn primary">保存设置</button>
           <button id="btn-system-reset" class="btn danger">恢复默认</button>
+          <button id="btn-system-reprovision" class="btn danger">清空 Wi-Fi 并重启配网</button>
         </div>
         <div id="system-toast" class="toast"></div>
       </section>

@@ -13,6 +13,7 @@
 #include "esp_vfs.h"
 #include "esp_spiffs.h"
 #include "game_engine.h"
+#include "wifi_service.h"
 
 static const char *TAG = "web_server";
 
@@ -241,6 +242,38 @@ static cJSON *status_to_json(const control_status_t *st)
     cJSON_AddNumberToObject(ble, "vibrate", st->ble_vibrate);
     cJSON_AddItemToObject(root, "ble", ble);
 
+    return root;
+}
+
+static cJSON *wifi_status_to_json(const wifi_service_status_t *st)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return NULL;
+    }
+
+    const char *state = "connecting";
+    if (st->reboot_pending) {
+        state = "rebooting";
+    } else if (st->provisioning) {
+        state = "provisioning";
+    } else if (st->connected) {
+        state = "connected";
+    } else if (st->connect_failed) {
+        state = "failed";
+    } else if (!st->provisioned) {
+        state = "unprovisioned";
+    }
+
+    cJSON_AddStringToObject(root, "state", state);
+    cJSON_AddBoolToObject(root, "provisioned", st->provisioned);
+    cJSON_AddBoolToObject(root, "connected", st->connected);
+    cJSON_AddBoolToObject(root, "provisioning", st->provisioning);
+    cJSON_AddBoolToObject(root, "connect_failed", st->connect_failed);
+    cJSON_AddBoolToObject(root, "reboot_pending", st->reboot_pending);
+    cJSON_AddStringToObject(root, "service_name", st->service_name[0] ? st->service_name : "");
+    cJSON_AddStringToObject(root, "ssid", st->ssid[0] ? st->ssid : "");
+    cJSON_AddStringToObject(root, "ip_addr", st->ip_addr[0] ? st->ip_addr : "");
     return root;
 }
 
@@ -556,6 +589,20 @@ static esp_err_t handle_get_config(httpd_req_t *req)
     return err;
 }
 
+static esp_err_t handle_get_wifi_status(httpd_req_t *req)
+{
+    wifi_service_status_t st = {0};
+    wifi_service_get_status(&st);
+
+    cJSON *root = wifi_status_to_json(&st);
+    if (!root) {
+        return send_error(req, "500 Internal Server Error", "json alloc failed");
+    }
+    esp_err_t err = send_json(req, root);
+    cJSON_Delete(root);
+    return err;
+}
+
 static esp_err_t handle_post_config(httpd_req_t *req)
 {
     if (s_ctx.game && game_engine_is_running(s_ctx.game)) {
@@ -710,6 +757,65 @@ static esp_err_t handle_post_game_config(httpd_req_t *req)
     }
     err = send_json(req, root);
     cJSON_Delete(root);
+    return err;
+}
+
+static esp_err_t handle_post_wifi_action(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > MAX_POST_BODY) {
+        return send_error(req, "400 Bad Request", "invalid content length");
+    }
+
+    char *buf = calloc(1, req->content_len + 1);
+    if (!buf) {
+        return send_error(req, "500 Internal Server Error", "oom");
+    }
+
+    int received = 0;
+    while (received < req->content_len) {
+        int ret = httpd_req_recv(req, buf + received, req->content_len - received);
+        if (ret <= 0) {
+            free(buf);
+            return send_error(req, "400 Bad Request", "recv failed");
+        }
+        received += ret;
+    }
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (!root) {
+        return send_error(req, "400 Bad Request", "invalid JSON");
+    }
+
+    cJSON *action = cJSON_GetObjectItem(root, "action");
+    if (!action || !cJSON_IsString(action)) {
+        cJSON_Delete(root);
+        return send_error(req, "400 Bad Request", "missing action");
+    }
+
+    const char *act = cJSON_GetStringValue(action);
+    if (!act || strcmp(act, "reprovision_reboot") != 0) {
+        cJSON_Delete(root);
+        return send_error(req, "400 Bad Request", "unknown action");
+    }
+
+    esp_err_t err = wifi_service_request_reprovision_reboot();
+    cJSON_Delete(root);
+    if (err != ESP_OK) {
+        return send_error(req, "500 Internal Server Error", "reprovision request failed");
+    }
+
+    wifi_service_status_t st = {0};
+    wifi_service_get_status(&st);
+
+    cJSON *resp = wifi_status_to_json(&st);
+    if (!resp) {
+        return send_error(req, "500 Internal Server Error", "json alloc failed");
+    }
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddStringToObject(resp, "message", "wifi credentials cleared, rebooting");
+    err = send_json(req, resp);
+    cJSON_Delete(resp);
     return err;
 }
 
@@ -969,6 +1075,16 @@ esp_err_t web_server_start(const web_server_ctx_t *ctx)
         .method = HTTP_POST,
         .handler = handle_post_config,
     };
+    httpd_uri_t wifi_status_uri = {
+        .uri = "/api/system/wifi",
+        .method = HTTP_GET,
+        .handler = handle_get_wifi_status,
+    };
+    httpd_uri_t wifi_action_uri = {
+        .uri = "/api/system/wifi",
+        .method = HTTP_POST,
+        .handler = handle_post_wifi_action,
+    };
     httpd_uri_t game_status_uri = {
         .uri = "/api/game/status",
         .method = HTTP_GET,
@@ -1014,6 +1130,8 @@ esp_err_t web_server_start(const web_server_ctx_t *ctx)
     httpd_register_uri_handler(s_server, &status_uri);
     httpd_register_uri_handler(s_server, &config_get_uri);
     httpd_register_uri_handler(s_server, &config_post_uri);
+    httpd_register_uri_handler(s_server, &wifi_status_uri);
+    httpd_register_uri_handler(s_server, &wifi_action_uri);
     httpd_register_uri_handler(s_server, &game_status_uri);
     httpd_register_uri_handler(s_server, &game_config_get_uri);
     httpd_register_uri_handler(s_server, &game_config_post_uri);

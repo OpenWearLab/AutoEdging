@@ -1,16 +1,16 @@
 menu "App Configuration"
 
-config APP_WIFI_SSID
-    string "Wi-Fi SSID"
-    default ""
-
-config APP_WIFI_PASSWORD
-    string "Wi-Fi Password"
-    default ""
-
 config APP_WIFI_MAX_RETRY
     int "Wi-Fi Max Retry"
     default 10
+
+config APP_WIFI_PROV_POP
+    string "BLE Provisioning Proof-of-Possession"
+    default "AE123"
+
+config APP_WIFI_PROV_SERVICE_PREFIX
+    string "BLE Provisioning Device Name Prefix"
+    default "PROV_AutoEdging_"
 
 config APP_MDNS_HOSTNAME
     string "mDNS Hostname"

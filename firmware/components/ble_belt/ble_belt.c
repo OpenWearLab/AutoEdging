@@ -63,65 +63,57 @@ static QueueHandle_t g_q;
 static EventGroupHandle_t g_evt;
 static TaskHandle_t g_task;
 
-#define EVT_PARAMS_OK    (1U << 0)
-#define EVT_RAND_OK      (1U << 1)
-#define EVT_DATA_OK      (1U << 2)
-#define EVT_START_OK     (1U << 3)
+#define EVT_RAND_OK      (1U << 0)
+#define EVT_DATA_OK      (1U << 1)
+#define EVT_START_OK     (1U << 2)
+#define EVT_STOP_OK      (1U << 3)
 #define EVT_FAIL         (1U << 15)
 
 static bool g_inited = false;
-static bool g_scan_rsp_configured = false;
 
-static const uint8_t g_adv_handle = 0x02;
 static uint8_t g_rand_addr[6] = {0xC2,0x11,0x22,0x33,0x44,0x55};
 
-static esp_ble_gap_ext_adv_params_t g_ext_adv_params = {
-    .type = ESP_BLE_GAP_SET_EXT_ADV_PROP_LEGACY |
-            ESP_BLE_GAP_SET_EXT_ADV_PROP_CONNECTABLE |
-            ESP_BLE_GAP_SET_EXT_ADV_PROP_SCANNABLE,
-    .interval_min = 0x00A0,
-    .interval_max = 0x00A0,
+static esp_ble_adv_params_t g_adv_params = {
+    .adv_int_min = 0x00A0,
+    .adv_int_max = 0x00A0,
+    .adv_type = ADV_TYPE_NONCONN_IND,
+    .own_addr_type = BLE_ADDR_TYPE_RANDOM,
+    .peer_addr = {0},
+    .peer_addr_type = BLE_ADDR_TYPE_PUBLIC,
     .channel_map = ADV_CHNL_ALL,
-    .filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
-    .tx_power = ESP_BLE_PWR_TYPE_DEFAULT,
-    .primary_phy = ESP_BLE_GAP_PHY_1M,
-    .max_skip = 0,
-    .secondary_phy = ESP_BLE_GAP_PHY_1M,
-    .sid = 0,
-    .scan_req_notif = false,
+    .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
 };
 
 static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
 {
     switch (event) {
-    case ESP_GAP_BLE_EXT_ADV_SET_PARAMS_COMPLETE_EVT:
-        if (param->ext_adv_set_params.status == ESP_BT_STATUS_SUCCESS) {
-            xEventGroupSetBits(g_evt, EVT_PARAMS_OK);
-            esp_ble_gap_ext_adv_set_rand_addr(g_adv_handle, g_rand_addr);
-        } else {
-            xEventGroupSetBits(g_evt, EVT_FAIL);
-        }
-        break;
-
-    case ESP_GAP_BLE_EXT_ADV_SET_RAND_ADDR_COMPLETE_EVT:
-        if (param->ext_adv_set_rand_addr.status == ESP_BT_STATUS_SUCCESS) {
+    case ESP_GAP_BLE_SET_STATIC_RAND_ADDR_EVT:
+        if (param->set_rand_addr_cmpl.status == ESP_BT_STATUS_SUCCESS) {
             xEventGroupSetBits(g_evt, EVT_RAND_OK);
         } else {
             xEventGroupSetBits(g_evt, EVT_FAIL);
         }
         break;
 
-    case ESP_GAP_BLE_EXT_ADV_DATA_SET_COMPLETE_EVT:
-        if (param->ext_adv_data_set.status == ESP_BT_STATUS_SUCCESS) {
+    case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
+        if (param->adv_data_raw_cmpl.status == ESP_BT_STATUS_SUCCESS) {
             xEventGroupSetBits(g_evt, EVT_DATA_OK);
         } else {
             xEventGroupSetBits(g_evt, EVT_FAIL);
         }
         break;
 
-    case ESP_GAP_BLE_EXT_ADV_START_COMPLETE_EVT:
-        if (param->ext_adv_start.status == ESP_BT_STATUS_SUCCESS) {
+    case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
+        if (param->adv_start_cmpl.status == ESP_BT_STATUS_SUCCESS) {
             xEventGroupSetBits(g_evt, EVT_START_OK);
+        } else {
+            xEventGroupSetBits(g_evt, EVT_FAIL);
+        }
+        break;
+
+    case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
+        if (param->adv_stop_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+            xEventGroupSetBits(g_evt, EVT_STOP_OK);
         } else {
             xEventGroupSetBits(g_evt, EVT_FAIL);
         }
@@ -132,33 +124,19 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
     }
 }
 
-static void stop_ext_adv(void)
+static esp_err_t stop_adv(void)
 {
-    uint8_t inst[1] = { g_adv_handle };
-    (void)esp_ble_gap_ext_adv_stop(1, inst); // ext adv stop/start API :contentReference[oaicite:5]{index=5}
+    return esp_ble_gap_stop_advertising();
 }
 
-static esp_err_t start_ext_adv(void)
+static esp_err_t start_adv(void)
 {
-    esp_ble_gap_ext_adv_t adv = {
-        .instance = g_adv_handle,
-        .duration = 0,
-        .max_events = 0,
-    };
-    return esp_ble_gap_ext_adv_start(1, &adv); // :contentReference[oaicite:6]{index=6}
+    return esp_ble_gap_start_advertising(&g_adv_params);
 }
 
 static esp_err_t config_payload(const adv_payload_t *pl)
 {
-    esp_err_t err = esp_ble_gap_config_ext_adv_data_raw(g_adv_handle, pl->len, pl->data); // :contentReference[oaicite:7]{index=7}
-    if (err != ESP_OK) return err;
-
-    if (!g_scan_rsp_configured) {
-        err = esp_ble_gap_config_ext_scan_rsp_data_raw(g_adv_handle, 0, NULL); // :contentReference[oaicite:8]{index=8}
-        if (err != ESP_OK) return err;
-        g_scan_rsp_configured = true;
-    }
-    return ESP_OK;
+    return esp_ble_gap_config_adv_data_raw((uint8_t *)pl->data, pl->len);
 }
 
 static const adv_payload_t *pick_payload(const ble_cmd_t *cmd)
@@ -169,7 +147,7 @@ static const adv_payload_t *pick_payload(const ble_cmd_t *cmd)
 
 static esp_err_t wait_bits(EventBits_t bits, TickType_t to)
 {
-    EventBits_t got = xEventGroupWaitBits(g_evt, bits | EVT_FAIL, pdTRUE, pdTRUE, to); // :contentReference[oaicite:9]{index=9}
+    EventBits_t got = xEventGroupWaitBits(g_evt, bits | EVT_FAIL, pdTRUE, pdTRUE, to);
     if (got & EVT_FAIL) return ESP_FAIL;
     if ((got & bits) != bits) return ESP_ERR_TIMEOUT;
     return ESP_OK;
@@ -179,8 +157,7 @@ static void ble_belt_task(void *arg)
 {
     (void)arg;
 
-    // 等待 init 握手完成（你原本的 EVT_PARAMS_OK / EVT_RAND_OK 逻辑不变）
-    if (wait_bits(EVT_PARAMS_OK | EVT_RAND_OK, pdMS_TO_TICKS(1500)) != ESP_OK) {
+    if (wait_bits(EVT_RAND_OK, pdMS_TO_TICKS(1500)) != ESP_OK) {
         ESP_LOGE(TAG, "BLE init handshake failed");
         vTaskDelete(NULL);
         return;
@@ -199,7 +176,13 @@ static void ble_belt_task(void *arg)
             // 超时：队列持续空闲 -> stop
             if (g_adv_running) {
                 ESP_LOGD(TAG, "idle %dms -> stop adv", BLE_BELT_IDLE_STOP_MS);
-                stop_ext_adv();
+                xEventGroupClearBits(g_evt, EVT_STOP_OK | EVT_FAIL);
+                esp_err_t err = stop_adv();
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "stop adv failed after idle: %s", esp_err_to_name(err));
+                } else if (wait_bits(EVT_STOP_OK, pdMS_TO_TICKS(500)) != ESP_OK) {
+                    ESP_LOGW(TAG, "wait STOP_COMPLETE failed after idle");
+                }
                 g_adv_running = false;
             }
             continue;
@@ -212,14 +195,27 @@ static void ble_belt_task(void *arg)
             continue;
         }
 
-        // 下发新的 adv data（不主动 stop/start）
+        if (g_adv_running) {
+            xEventGroupClearBits(g_evt, EVT_STOP_OK | EVT_FAIL);
+            esp_err_t err = stop_adv();
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "stop adv failed: %s", esp_err_to_name(err));
+                continue;
+            }
+
+            err = wait_bits(EVT_STOP_OK, pdMS_TO_TICKS(500));
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "wait STOP_COMPLETE failed: %s", esp_err_to_name(err));
+                continue;
+            }
+            g_adv_running = false;
+        }
+
         xEventGroupClearBits(g_evt, EVT_DATA_OK | EVT_FAIL);
 
-        esp_err_t err = config_payload(pl);   // 内部调用 esp_ble_gap_config_ext_adv_data_raw(...)
+        esp_err_t err = config_payload(pl);
         if (err != ESP_OK) {
-            // 这里不做“中途 stop->config->start”的回退，因为你要求只在队列空闲时 stop；
-            // 所以失败就算该命令执行失败，但不会破坏后续 FIFO 执行。
-            ESP_LOGE(TAG, "config payload failed (keep running): %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "config payload failed: %s", esp_err_to_name(err));
             continue;
         }
 
@@ -229,23 +225,20 @@ static void ble_belt_task(void *arg)
             continue;
         }
 
-        // 首次命令（或空闲 stop 后再次来命令）才需要 start
-        if (!g_adv_running) {
-            xEventGroupClearBits(g_evt, EVT_START_OK | EVT_FAIL);
+        xEventGroupClearBits(g_evt, EVT_START_OK | EVT_FAIL);
 
-            err = start_ext_adv();
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "start adv failed: %s", esp_err_to_name(err));
-                continue;
-            }
-
-            err = wait_bits(EVT_START_OK, pdMS_TO_TICKS(500));
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "wait START_COMPLETE failed: %s", esp_err_to_name(err));
-                continue;
-            }
-            g_adv_running = true;
+        err = start_adv();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "start adv failed: %s", esp_err_to_name(err));
+            continue;
         }
+
+        err = wait_bits(EVT_START_OK, pdMS_TO_TICKS(500));
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "wait START_COMPLETE failed: %s", esp_err_to_name(err));
+            continue;
+        }
+        g_adv_running = true;
 
         ESP_LOGI(TAG, "sent cmd=%d idx=%u len=%u (adv_running=1)",
                  (int)c.type, (unsigned)c.idx, (unsigned)pl->len);
@@ -271,8 +264,7 @@ esp_err_t ble_belt_init(void)
 
     ESP_ERROR_CHECK(esp_ble_gap_register_callback(gap_cb));
 
-    // 设置扩展广播参数（触发回调链）
-    ESP_ERROR_CHECK(esp_ble_gap_ext_adv_set_params(g_adv_handle, &g_ext_adv_params)); // :contentReference[oaicite:10]{index=10}
+    ESP_ERROR_CHECK(esp_ble_gap_set_rand_addr(g_rand_addr));
 
     // 启动 BLE 任务（后续所有 stop/config/start 都在该任务里执行）
     xTaskCreate(ble_belt_task, "ble_belt", 4096, NULL, 8, &g_task);

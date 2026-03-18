@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-// 初始化 BLE 与扩展广播；内部会启动一次默认广播（payload 0）
+// 初始化 BLE 与 legacy 广播能力；首次发送命令时才会启动广播
 esp_err_t ble_belt_init(void);
 
 // 发送写死的广播包（0-based：和你示例 g_vibrate_payloads[1] 一致）
