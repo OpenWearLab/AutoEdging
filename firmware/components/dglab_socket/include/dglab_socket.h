@@ -18,6 +18,7 @@ extern "C" {
 #define DGLAB_QR_TEXT_MAX_LEN 256
 #define DGLAB_ERROR_CODE_MAX_LEN 16
 #define DGLAB_ERROR_TEXT_MAX_LEN 96
+#define DGLAB_WAVEFORM_PRESET_COUNT 16
 
 typedef enum {
     DGLAB_CONNECTION_DISABLED = 0,
@@ -36,11 +37,13 @@ typedef struct {
     dglab_connection_state_t connection_state;
     bool websocket_connected;
     bool paired;
+    bool auto_disabled;
     char client_id[DGLAB_ID_MAX_LEN];
     char target_id[DGLAB_ID_MAX_LEN];
     char qr_text[DGLAB_QR_TEXT_MAX_LEN];
     char last_error_code[DGLAB_ERROR_CODE_MAX_LEN];
     char last_error_text[DGLAB_ERROR_TEXT_MAX_LEN];
+    uint8_t connect_fail_count;
     int64_t last_heartbeat_ms;
 } dglab_status_t;
 

@@ -158,11 +158,24 @@
             <input id="game-shock-duration" type="number" min="1" max="10" step="1" />
           </div>
           <div class="field">
-            <label>DG-LAB 波形预设<button type="button" class="help-btn" data-help-title="DG-LAB 波形预设" data-help="对应 DG-LAB SOCKET 示例里的 3 组预设波形。">?</button></label>
+            <label>DG-LAB 波形预设<button type="button" class="help-btn" data-help-title="DG-LAB 波形预设" data-help="对应 DG-LAB 官方的全部 16 组预设波形。">?</button></label>
             <select id="game-shock-waveform-preset">
-              <option value="1">Preset 1</option>
-              <option value="2">Preset 2</option>
-              <option value="3">Preset 3</option>
+              <option value="1">呼吸</option>
+              <option value="2">潮汐</option>
+              <option value="3">连击</option>
+              <option value="4">快速按捏</option>
+              <option value="5">按捏渐强</option>
+              <option value="6">心跳节奏</option>
+              <option value="7">压缩</option>
+              <option value="8">节奏步伐</option>
+              <option value="9">颗粒摩擦</option>
+              <option value="10">渐变弹跳</option>
+              <option value="11">波浪涟漪</option>
+              <option value="12">雨水冲刷</option>
+              <option value="13">变速敲击</option>
+              <option value="14">信号灯</option>
+              <option value="15">挑逗1</option>
+              <option value="16">挑逗2</option>
             </select>
           </div>
           <div class="field">
@@ -387,7 +400,7 @@
           <div class="field">
             <label>WebSocket 服务地址</label>
             <input id="cfg-dglab-server-url" type="text" placeholder="ws://host:9999" />
-            <div class="field-hint">填写基础地址，不要带路径和 clientId，例如 `ws://192.168.1.10:9999`。</div>
+            <div class="field-hint">填写基础地址，不要带路径和 clientId，例如 `ws://192.168.1.10:9999`。如果连续连接失败 3 次，系统会自动停用 DG-LAB，需手动重新连接。</div>
           </div>
           <div class="field">
             <label>连接状态</label>

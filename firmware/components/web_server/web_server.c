@@ -362,11 +362,13 @@ static cJSON *dglab_status_to_json(const dglab_status_t *st)
     cJSON_AddStringToObject(root, "connectionState", dglab_connection_state_to_string(st->connection_state));
     cJSON_AddBoolToObject(root, "websocketConnected", st->websocket_connected);
     cJSON_AddBoolToObject(root, "paired", st->paired);
+    cJSON_AddBoolToObject(root, "autoDisabled", st->auto_disabled);
     cJSON_AddStringToObject(root, "clientId", st->client_id);
     cJSON_AddStringToObject(root, "targetId", st->target_id);
     cJSON_AddStringToObject(root, "qrText", st->qr_text);
     cJSON_AddStringToObject(root, "lastErrorCode", st->last_error_code);
     cJSON_AddStringToObject(root, "lastErrorText", st->last_error_text);
+    cJSON_AddNumberToObject(root, "connectFailCount", st->connect_fail_count);
     cJSON_AddNumberToObject(root, "lastHeartbeatMs", (double)st->last_heartbeat_ms);
     return root;
 }
@@ -1166,8 +1168,8 @@ static void ws_push_task(void *arg)
                            "{\"ts\":%lld,\"pressure_kpa\":%.3f,\"temp_c\":%.2f,"
                            "\"sensor_status\":%u,\"pwm\":[%u,%u,%u,%u],\"ble\":{\"swing\":%u,\"vibrate\":%u},"
                            "\"dglab\":{\"serverUrl\":\"%s\",\"connectionState\":\"%s\",\"websocketConnected\":%s,"
-                           "\"paired\":%s,\"clientId\":\"%s\",\"targetId\":\"%s\",\"qrText\":\"%s\","
-                           "\"lastErrorCode\":\"%s\",\"lastErrorText\":\"%s\",\"lastHeartbeatMs\":%lld},"
+                           "\"paired\":%s,\"autoDisabled\":%s,\"clientId\":\"%s\",\"targetId\":\"%s\",\"qrText\":\"%s\","
+                           "\"lastErrorCode\":\"%s\",\"lastErrorText\":\"%s\",\"connectFailCount\":%u,\"lastHeartbeatMs\":%lld},"
                            "\"game\":{\"running\":%s,\"paused\":%s,\"state\":\"%s\","
                            "\"currentPressure\":%.3f,\"averagePressure\":%.3f,\"currentIntensity\":%.2f,"
                            "\"targetIntensity\":%.2f,\"midPressure\":%.3f,\"criticalPressure\":%.3f,"
@@ -1184,11 +1186,13 @@ static void ws_push_task(void *arg)
                            dglab_connection_state_to_string(dst.connection_state),
                            dst.websocket_connected ? "true" : "false",
                            dst.paired ? "true" : "false",
+                           dst.auto_disabled ? "true" : "false",
                            dst.client_id,
                            dst.target_id,
                            dst.qr_text,
                            dst.last_error_code,
                            dst.last_error_text,
+                           (unsigned)dst.connect_fail_count,
                            (long long)dst.last_heartbeat_ms,
                            gst.running ? "true" : "false",
                            gst.paused ? "true" : "false",

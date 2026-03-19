@@ -1,5 +1,6 @@
 #include "dglab_socket.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
@@ -15,6 +16,7 @@
 
 #define DGLAB_NVS_NAMESPACE "dglab"
 #define DGLAB_NVS_KEY_CFG   "cfg"
+#define DGLAB_MAX_CONNECT_FAILURES 3
 
 static const char *TAG = "dglab_socket";
 
@@ -28,12 +30,7 @@ typedef struct {
     dglab_config_t cfg;
 } dglab_config_blob_t;
 
-static const char *s_waveform_presets[] = {
-    "",
-    "[\"0A0A0A0A00000000\",\"0A0A0A0A0A0A0A0A\",\"0A0A0A0A14141414\",\"0A0A0A0A1E1E1E1E\",\"0A0A0A0A28282828\",\"0A0A0A0A32323232\",\"0A0A0A0A3C3C3C3C\",\"0A0A0A0A46464646\",\"0A0A0A0A50505050\",\"0A0A0A0A5A5A5A5A\",\"0A0A0A0A64646464\"]",
-    "[\"0A0A0A0A00000000\",\"0D0D0D0D0F0F0F0F\",\"101010101E1E1E1E\",\"1313131332323232\",\"1616161641414141\",\"1A1A1A1A50505050\",\"1D1D1D1D64646464\",\"202020205A5A5A5A\",\"2323232350505050\",\"262626264B4B4B4B\",\"2A2A2A2A41414141\"]",
-    "[\"4A4A4A4A64646464\",\"4545454564646464\",\"4040404064646464\",\"3B3B3B3B64646464\",\"3636363664646464\",\"3232323264646464\",\"2D2D2D2D64646464\",\"2828282864646464\",\"2323232364646464\",\"1E1E1E1E64646464\",\"1A1A1A1A64646464\"]",
-};
+#include "dglab_waveforms.h"
 
 static void dglab_update_qr_text_locked(dglab_socket_t *svc)
 {
@@ -59,6 +56,15 @@ static void dglab_set_state_locked(dglab_socket_t *svc, dglab_connection_state_t
     svc->status.connection_state = state;
 }
 
+static void dglab_reset_connect_failures_locked(dglab_socket_t *svc)
+{
+    if (!svc) {
+        return;
+    }
+    svc->status.connect_fail_count = 0;
+    svc->status.auto_disabled = false;
+}
+
 static void dglab_set_error_locked(dglab_socket_t *svc, const char *code, const char *text)
 {
     if (!svc) {
@@ -66,7 +72,9 @@ static void dglab_set_error_locked(dglab_socket_t *svc, const char *code, const 
     }
     snprintf(svc->status.last_error_code, sizeof(svc->status.last_error_code), "%s", code ? code : "");
     snprintf(svc->status.last_error_text, sizeof(svc->status.last_error_text), "%s", text ? text : "");
-    if (svc->config.server_url[0] != '\0') {
+    if (svc->status.auto_disabled || svc->config.server_url[0] == '\0') {
+        dglab_set_state_locked(svc, DGLAB_CONNECTION_DISABLED);
+    } else {
         dglab_set_state_locked(svc, DGLAB_CONNECTION_ERROR);
     }
 }
@@ -78,10 +86,10 @@ static void dglab_clear_pairing_locked(dglab_socket_t *svc)
     }
     svc->status.paired = false;
     svc->status.target_id[0] = '\0';
-    if (svc->status.websocket_connected) {
-        dglab_set_state_locked(svc, DGLAB_CONNECTION_CONNECTED);
-    } else if (svc->config.server_url[0] == '\0') {
+    if (svc->status.auto_disabled || svc->config.server_url[0] == '\0') {
         dglab_set_state_locked(svc, DGLAB_CONNECTION_DISABLED);
+    } else if (svc->status.websocket_connected) {
+        dglab_set_state_locked(svc, DGLAB_CONNECTION_CONNECTED);
     } else {
         dglab_set_state_locked(svc, DGLAB_CONNECTION_CONNECTING);
     }
@@ -99,6 +107,46 @@ static void dglab_disconnect_locked(dglab_socket_t *svc, bool clear_client)
         svc->status.client_id[0] = '\0';
     }
     dglab_update_qr_text_locked(svc);
+}
+
+static void dglab_handle_connect_failure_locked(dglab_socket_t *svc)
+{
+    if (!svc || svc->config.server_url[0] == '\0' || svc->status.auto_disabled) {
+        return;
+    }
+
+    if (svc->status.connect_fail_count < UINT8_MAX) {
+        svc->status.connect_fail_count++;
+    }
+
+    if (svc->status.connect_fail_count < DGLAB_MAX_CONNECT_FAILURES) {
+        char text[DGLAB_ERROR_TEXT_MAX_LEN];
+        snprintf(text,
+                 sizeof(text),
+                 "connect failed (%u/%u)",
+                 (unsigned)svc->status.connect_fail_count,
+                 DGLAB_MAX_CONNECT_FAILURES);
+        dglab_set_error_locked(svc, "connect_fail", text);
+        return;
+    }
+
+    svc->status.auto_disabled = true;
+    svc->status.websocket_connected = false;
+    svc->status.last_heartbeat_ms = 0;
+    svc->status.client_id[0] = '\0';
+    svc->status.paired = false;
+    svc->status.target_id[0] = '\0';
+    dglab_update_qr_text_locked(svc);
+    snprintf(svc->status.last_error_code, sizeof(svc->status.last_error_code), "%s", "auto_disabled");
+    snprintf(svc->status.last_error_text,
+             sizeof(svc->status.last_error_text),
+             "disabled after %u failed connections",
+             DGLAB_MAX_CONNECT_FAILURES);
+    dglab_set_state_locked(svc, DGLAB_CONNECTION_DISABLED);
+    if (svc->client) {
+        esp_websocket_client_destroy_on_exit((esp_websocket_client_handle_t)svc->client);
+        svc->client = NULL;
+    }
 }
 
 static esp_err_t dglab_normalize_server_url(const char *input, char *out, size_t out_len, char *err_msg, size_t err_len)
@@ -286,7 +334,12 @@ static esp_err_t dglab_start_client_locked(dglab_socket_t *svc)
         return ESP_ERR_INVALID_ARG;
     }
     if (svc->config.server_url[0] == '\0') {
+        dglab_reset_connect_failures_locked(svc);
         dglab_disconnect_locked(svc, true);
+        dglab_set_state_locked(svc, DGLAB_CONNECTION_DISABLED);
+        return ESP_OK;
+    }
+    if (svc->status.auto_disabled) {
         dglab_set_state_locked(svc, DGLAB_CONNECTION_DISABLED);
         return ESP_OK;
     }
@@ -403,6 +456,7 @@ static void ws_event_handler(void *handler_args,
 
     switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED:
+        dglab_reset_connect_failures_locked(svc);
         svc->status.websocket_connected = true;
         svc->status.last_error_code[0] = '\0';
         svc->status.last_error_text[0] = '\0';
@@ -410,8 +464,11 @@ static void ws_event_handler(void *handler_args,
         ESP_LOGI(TAG, "connected to %s", svc->config.server_url);
         break;
     case WEBSOCKET_EVENT_DISCONNECTED:
+        if (svc->config.server_url[0] != '\0' && !svc->status.websocket_connected) {
+            dglab_handle_connect_failure_locked(svc);
+        }
         dglab_disconnect_locked(svc, true);
-        if (svc->config.server_url[0] != '\0') {
+        if (svc->config.server_url[0] != '\0' && !svc->status.auto_disabled) {
             dglab_set_state_locked(svc, DGLAB_CONNECTION_CONNECTING);
         }
         ESP_LOGW(TAG, "disconnected from websocket server");
@@ -480,6 +537,7 @@ esp_err_t dglab_socket_set_config(dglab_socket_t *svc, const dglab_config_t *cfg
     bool changed = strcmp(svc->config.server_url, normalized) != 0;
     snprintf(svc->config.server_url, sizeof(svc->config.server_url), "%s", normalized);
     snprintf(svc->status.server_url, sizeof(svc->status.server_url), "%s", normalized);
+    dglab_reset_connect_failures_locked(svc);
     if (changed || svc->client == NULL) {
         dglab_stop_client_locked(svc);
         dglab_disconnect_locked(svc, true);
@@ -506,6 +564,7 @@ esp_err_t dglab_socket_reconnect(dglab_socket_t *svc)
     }
     dglab_stop_client_locked(svc);
     dglab_disconnect_locked(svc, true);
+    dglab_reset_connect_failures_locked(svc);
     esp_err_t err = dglab_start_client_locked(svc);
     xSemaphoreGive(svc->lock);
     return err;
@@ -557,7 +616,8 @@ esp_err_t dglab_socket_send_punishment(dglab_socket_t *svc, const dglab_punishme
         return ESP_ERR_INVALID_ARG;
     }
     if (punishment->shock_strength > 200 || punishment->shock_duration_s == 0 ||
-        punishment->shock_waveform_preset < 1 || punishment->shock_waveform_preset > 3) {
+        punishment->shock_waveform_preset < 1 ||
+        punishment->shock_waveform_preset > DGLAB_WAVEFORM_PRESET_COUNT) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -624,9 +684,16 @@ esp_err_t dglab_socket_send_punishment(dglab_socket_t *svc, const dglab_punishme
     cJSON_AddStringToObject(root, "channel", punishment->shock_channel == 'A' ? "A" : "B");
     cJSON_AddNumberToObject(root, "time", punishment->shock_duration_s);
 
-    char pulse_msg[512];
-    snprintf(pulse_msg, sizeof(pulse_msg), "%c:%s", punishment->shock_channel, waveform);
+    size_t pulse_msg_len = strlen(waveform) + 3;
+    char *pulse_msg = malloc(pulse_msg_len);
+    if (!pulse_msg) {
+        cJSON_Delete(root);
+        xSemaphoreGive(svc->lock);
+        return ESP_ERR_NO_MEM;
+    }
+    snprintf(pulse_msg, pulse_msg_len, "%c:%s", punishment->shock_channel, waveform);
     cJSON_AddStringToObject(root, "message", pulse_msg);
+    free(pulse_msg);
     err = dglab_send_json_locked(svc, root);
     cJSON_Delete(root);
     if (err != ESP_OK) {

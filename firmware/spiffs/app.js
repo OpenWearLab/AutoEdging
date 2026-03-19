@@ -518,19 +518,30 @@ function updateDglabConfig(cfg) {
   }
 }
 
+function formatDglabStateText(data, compact = false) {
+  if (!data) return compact ? 'disabled' : '--';
+  if (data.autoDisabled) {
+    return compact ? '已自动关闭' : '已自动关闭（连续失败 3 次）';
+  }
+  if (data.paired) {
+    const target = data.targetId ? data.targetId.slice(0, 8) : '--';
+    return compact ? `已配对 ${target}` : '已配对';
+  }
+  const failCount = Number.isFinite(Number(data.connectFailCount)) ? Number(data.connectFailCount) : 0;
+  if ((data.connectionState === 'error' || data.connectionState === 'connecting') && failCount > 0) {
+    return compact ? `连接失败 ${failCount}/3` : `连接中（已失败 ${failCount}/3）`;
+  }
+  return data.connectionState || (compact ? 'disabled' : '--');
+}
+
 function updateDglabStatus(data) {
   if (!data) return;
   dglabStatus = data;
   if (el.dglab) {
-    if (data.paired) {
-      const target = data.targetId ? data.targetId.slice(0, 8) : '--';
-      el.dglab.textContent = `已配对 ${target}`;
-    } else {
-      el.dglab.textContent = data.connectionState || 'disabled';
-    }
+    el.dglab.textContent = formatDglabStateText(data, true);
   }
   if (el.system.dglab.status.state) {
-    el.system.dglab.status.state.textContent = data.connectionState || '--';
+    el.system.dglab.status.state.textContent = formatDglabStateText(data, false);
   }
   if (el.system.dglab.status.clientId) {
     el.system.dglab.status.clientId.textContent = data.clientId || '--';
@@ -544,10 +555,15 @@ function updateDglabStatus(data) {
   if (el.system.dglab.status.error) {
     const code = data.lastErrorCode || '';
     const text = data.lastErrorText || '';
-    el.system.dglab.status.error.textContent = code || text ? `${code} ${text}`.trim() : '--';
+    const failCount = Number.isFinite(Number(data.connectFailCount)) ? Number(data.connectFailCount) : 0;
+    const suffix = failCount > 0 ? ` (${failCount}/3)` : '';
+    el.system.dglab.status.error.textContent = code || text ? `${code} ${text}`.trim() + suffix : '--';
   }
   if (el.system.dglab.status.qrText) {
     el.system.dglab.status.qrText.textContent = data.qrText || '--';
+  }
+  if (el.system.dglab.buttons.reconnect) {
+    el.system.dglab.buttons.reconnect.textContent = data.autoDisabled ? '重新启用并连接' : '重新连接';
   }
   renderDglabQr(data.qrText || '');
 }

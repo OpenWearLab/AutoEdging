@@ -120,7 +120,7 @@ esp_err_t game_config_validate(const game_config_t *cfg, char *err_msg, size_t e
     if (cfg->shock_duration_s < 1 || cfg->shock_duration_s > 10) {
         return validate_range_bool(false, "shockDuration out of range", err_msg, err_len);
     }
-    if (cfg->shock_waveform_preset < 1 || cfg->shock_waveform_preset > 3) {
+    if (cfg->shock_waveform_preset < 1 || cfg->shock_waveform_preset > DGLAB_WAVEFORM_PRESET_COUNT) {
         return validate_range_bool(false, "shockWaveformPreset out of range", err_msg, err_len);
     }
     if (cfg->mid_min_intensity < 0.0f || cfg->mid_min_intensity > cfg->max_motor_intensity) {
