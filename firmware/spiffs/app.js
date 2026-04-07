@@ -4,6 +4,7 @@ const el = {
   pwm: document.getElementById('pwm'),
   ble: document.getElementById('ble'),
   dglab: document.getElementById('dglab-status'),
+  nippleDome: document.getElementById('nipple-dome-status'),
   chartMeta: document.getElementById('chart-meta'),
   nav: {
     tabs: Array.from(document.querySelectorAll('.tab-btn')),
@@ -35,6 +36,10 @@ const el = {
       shockDuration: document.getElementById('game-shock-duration'),
       shockWaveformPreset: document.getElementById('game-shock-waveform-preset'),
       midMin: document.getElementById('game-mid-min'),
+      nippleDomeEnabled: document.getElementById('game-nipple-dome-enabled'),
+      nippleDomeMin: document.getElementById('game-nipple-dome-min'),
+      nippleDomeMax: document.getElementById('game-nipple-dome-max'),
+      nippleDomePeriod: document.getElementById('game-nipple-dome-period'),
       pwm0: document.getElementById('game-pwm0'),
       pwm1: document.getElementById('game-pwm1'),
       pwm2: document.getElementById('game-pwm2'),
@@ -62,18 +67,24 @@ const el = {
       pwm3: document.getElementById('cfg-pwm3'),
       bleSwing: document.getElementById('cfg-ble-swing'),
       bleVibrate: document.getElementById('cfg-ble-vibrate'),
+      nippleDomeDuty: document.getElementById('cfg-nipple-dome-duty'),
     },
     pwmValues: {
       pwm0: document.getElementById('cfg-pwm0-value'),
       pwm1: document.getElementById('cfg-pwm1-value'),
       pwm2: document.getElementById('cfg-pwm2-value'),
       pwm3: document.getElementById('cfg-pwm3-value'),
+      nippleDomeDuty: document.getElementById('cfg-nipple-dome-duty-value'),
     },
     buttons: {
       save: document.getElementById('btn-manual-save'),
       reset: document.getElementById('btn-manual-reset'),
       bleSwingStop: document.getElementById('btn-ble-swing-stop'),
       bleVibrateStop: document.getElementById('btn-ble-vibrate-stop'),
+      nippleDomeForward: document.getElementById('btn-nipple-dome-forward'),
+      nippleDomeReverse: document.getElementById('btn-nipple-dome-reverse'),
+      nippleDomeBrake: document.getElementById('btn-nipple-dome-brake'),
+      nippleDomeStop: document.getElementById('btn-nipple-dome-stop'),
     },
   },
   system: {
@@ -132,6 +143,7 @@ let manualApplyTimer = null;
 let dglabQr = null;
 let dglabLastHeartbeatValue = 0;
 let dglabLastHeartbeatSeenAt = 0;
+let manualNippleDomeMode = 'stop';
 
 const WS_STALE_TIMEOUT_MS = 1000;
 const WS_WATCHDOG_INTERVAL_MS = 200;
@@ -162,6 +174,8 @@ const CONTROL_DEFAULTS = {
   pwmPermille: [0, 0, 0, 0],
   bleSwing: 0,
   bleVibrate: 0,
+  nippleDomeMode: 'stop',
+  nippleDomeDutyPermille: 0,
   statusLedEnabled: true,
 };
 
@@ -338,6 +352,16 @@ function setManualPwmValue(key, value) {
   if (view) view.textContent = `${v.toFixed(1)}%`;
 }
 
+function setManualNippleDomeDuty(value) {
+  const v = Math.max(0, Math.min(100, parseFloatOr(value, 0)));
+  if (el.manual.inputs.nippleDomeDuty) {
+    el.manual.inputs.nippleDomeDuty.value = v.toFixed(1);
+  }
+  if (el.manual.pwmValues.nippleDomeDuty) {
+    el.manual.pwmValues.nippleDomeDuty.textContent = `${v.toFixed(1)}%`;
+  }
+}
+
 function setBleSelectValue(select, value) {
   if (!select) return;
   const v = parseInt(value, 10);
@@ -350,6 +374,42 @@ function setBleSelectValue(select, value) {
 
 function clampPercent(value) {
   return Math.max(0, Math.min(100, value));
+}
+
+function setManualNippleDomeMode(mode) {
+  manualNippleDomeMode = mode || 'stop';
+  const buttons = {
+    forward: el.manual.buttons.nippleDomeForward,
+    reverse: el.manual.buttons.nippleDomeReverse,
+    brake: el.manual.buttons.nippleDomeBrake,
+    stop: el.manual.buttons.nippleDomeStop,
+  };
+  Object.entries(buttons).forEach(([key, btn]) => {
+    if (!btn) return;
+    btn.classList.toggle('is-active', key === manualNippleDomeMode);
+  });
+}
+
+function formatNippleDomeStatus(data) {
+  if (!data) return '--';
+  const mode = String(data.mode || '--');
+  const direction = String(data.direction || mode || '--');
+  const dutyRaw = data.dutyPermille ?? data.duty_permille;
+  const duty = Number.isFinite(Number(dutyRaw)) ? (Number(dutyRaw) / 10).toFixed(1) : '--';
+  const periodRaw = data.switchPeriodMs ?? data.switch_period_ms;
+  const period = Number.isFinite(Number(periodRaw)) ? `${Number(periodRaw)}ms` : '--';
+  const autoEnabled = !!(data.autoEnabled ?? data.auto_enabled);
+  const enabled = data.enabled;
+  if (mode === 'auto_oscillate' || autoEnabled || enabled) {
+    return `${direction} ${duty}% / ${period}`;
+  }
+  if (direction === 'brake') {
+    return 'brake';
+  }
+  if (direction === 'stop') {
+    return 'stop';
+  }
+  return `${direction} ${duty}%`;
 }
 
 function updateGamePwmRangeView(key, minValue, maxValue) {
@@ -422,6 +482,9 @@ function updateStatus(data) {
   if (data.dglab) {
     updateDglabStatus(data.dglab);
   }
+  if (data.nipple_dome && el.nippleDome) {
+    el.nippleDome.textContent = formatNippleDomeStatus(data.nipple_dome);
+  }
 }
 
 function updateConfigForm(cfg) {
@@ -441,6 +504,13 @@ function updateConfigForm(cfg) {
   if (cfg.ble) {
     setBleSelectValue(el.manual.inputs.bleSwing, cfg.ble.swing ?? CONTROL_DEFAULTS.bleSwing);
     setBleSelectValue(el.manual.inputs.bleVibrate, cfg.ble.vibrate ?? CONTROL_DEFAULTS.bleVibrate);
+  }
+  if (cfg.nipple_dome) {
+    setManualNippleDomeMode(cfg.nipple_dome.mode || CONTROL_DEFAULTS.nippleDomeMode);
+    setManualNippleDomeDuty((cfg.nipple_dome.duty_permille ?? CONTROL_DEFAULTS.nippleDomeDutyPermille) / 10);
+  } else {
+    setManualNippleDomeMode(CONTROL_DEFAULTS.nippleDomeMode);
+    setManualNippleDomeDuty(CONTROL_DEFAULTS.nippleDomeDutyPermille / 10);
   }
   if (typeof cfg.window_sec === 'number') {
     windowSec = cfg.window_sec;
@@ -589,6 +659,10 @@ function collectManualConfig() {
       swing: parseIntOr(el.manual.inputs.bleSwing.value, CONTROL_DEFAULTS.bleSwing),
       vibrate: parseIntOr(el.manual.inputs.bleVibrate.value, CONTROL_DEFAULTS.bleVibrate),
     },
+    nipple_dome: {
+      mode: manualNippleDomeMode,
+      duty_permille: Math.round(parseFloatOr(el.manual.inputs.nippleDomeDuty.value, 0) * 10),
+    },
   };
 }
 
@@ -633,6 +707,18 @@ function updateGameConfigForm(cfg) {
     el.game.inputs.shockWaveformPreset.value = cfg.shockWaveformPreset ?? 1;
   }
   el.game.inputs.midMin.value = cfg.midMinIntensity ?? 5;
+  if (el.game.inputs.nippleDomeEnabled) {
+    el.game.inputs.nippleDomeEnabled.value = cfg.nippleDomeEnabled ? '1' : '0';
+  }
+  if (el.game.inputs.nippleDomeMin) {
+    el.game.inputs.nippleDomeMin.value = ((cfg.nippleDomeMinPermille ?? 250) / 10).toFixed(1);
+  }
+  if (el.game.inputs.nippleDomeMax) {
+    el.game.inputs.nippleDomeMax.value = ((cfg.nippleDomeMaxPermille ?? 800) / 10).toFixed(1);
+  }
+  if (el.game.inputs.nippleDomePeriod) {
+    el.game.inputs.nippleDomePeriod.value = cfg.nippleDomeSwitchPeriodMs ?? 700;
+  }
   PWM_KEYS.forEach((key, idx) => {
     const minPermille = Array.isArray(cfg.pwmMinPermille) ? (cfg.pwmMinPermille[idx] ?? 0) : 0;
     const maxPermille = Array.isArray(cfg.pwmMaxPermille) ? (cfg.pwmMaxPermille[idx] ?? 0) : 0;
@@ -659,6 +745,10 @@ function collectGameConfig() {
     shockDuration: parseIntOr(el.game.inputs.shockDuration.value, 1),
     shockWaveformPreset: parseIntOr(el.game.inputs.shockWaveformPreset.value, 1),
     midMinIntensity: parseFloat(el.game.inputs.midMin.value),
+    nippleDomeEnabled: el.game.inputs.nippleDomeEnabled.value === '1',
+    nippleDomeMinPermille: Math.round(parseFloatOr(el.game.inputs.nippleDomeMin.value, 25) * 10),
+    nippleDomeMaxPermille: Math.round(parseFloatOr(el.game.inputs.nippleDomeMax.value, 80) * 10),
+    nippleDomeSwitchPeriodMs: parseIntOr(el.game.inputs.nippleDomePeriod.value, 700),
     pwmMaxPermille: [
       Math.round(parseFloat(el.game.inputs.pwm0.value || '0') * 10),
       Math.round(parseFloat(el.game.inputs.pwm1.value || '0') * 10),
@@ -761,6 +851,9 @@ function updateGameStatus(data) {
   }
   if (el.game.buttons.pause) {
     el.game.buttons.pause.textContent = data.paused ? '继续' : '暂停';
+  }
+  if (data.nippleDome && el.nippleDome) {
+    el.nippleDome.textContent = formatNippleDomeStatus(data.nippleDome);
   }
   setManualEnabled(!gameRunning);
   updatePressureColor(lastPressure);
@@ -870,6 +963,8 @@ function resetManualConfigToDefaults() {
   });
   setBleSelectValue(el.manual.inputs.bleSwing, CONTROL_DEFAULTS.bleSwing);
   setBleSelectValue(el.manual.inputs.bleVibrate, CONTROL_DEFAULTS.bleVibrate);
+  setManualNippleDomeMode(CONTROL_DEFAULTS.nippleDomeMode);
+  setManualNippleDomeDuty(CONTROL_DEFAULTS.nippleDomeDutyPermille / 10);
   postManualConfig(false);
 }
 
@@ -1217,6 +1312,26 @@ function setupManualControls() {
       scheduleManualConfigApply();
     });
   });
+
+  if (el.manual.inputs.nippleDomeDuty) {
+    el.manual.inputs.nippleDomeDuty.addEventListener('input', () => {
+      setManualNippleDomeDuty(el.manual.inputs.nippleDomeDuty.value);
+      scheduleManualConfigApply();
+    });
+  }
+
+  [
+    ['forward', el.manual.buttons.nippleDomeForward],
+    ['reverse', el.manual.buttons.nippleDomeReverse],
+    ['brake', el.manual.buttons.nippleDomeBrake],
+    ['stop', el.manual.buttons.nippleDomeStop],
+  ].forEach(([mode, btn]) => {
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      setManualNippleDomeMode(mode);
+      postManualConfig(false);
+    });
+  });
 }
 
 el.manual.buttons.save.addEventListener('click', () => postManualConfig(true));
@@ -1229,6 +1344,7 @@ el.manual.buttons.bleVibrateStop.addEventListener('click', () => {
   setBleSelectValue(el.manual.inputs.bleVibrate, 0);
   postManualConfig(false);
 });
+setManualNippleDomeMode(CONTROL_DEFAULTS.nippleDomeMode);
 
 el.system.buttons.save.addEventListener('click', () => postSystemConfig(true));
 el.system.buttons.reset.addEventListener('click', () => resetSystemConfigToDefaults());

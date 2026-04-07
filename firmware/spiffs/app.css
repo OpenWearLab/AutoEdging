@@ -400,6 +400,12 @@ body {
   line-height: 1.45;
 }
 
+.direction-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .mono {
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
   word-break: break-all;
@@ -651,6 +657,13 @@ body {
   background: rgba(255, 107, 107, 0.2);
   border-color: rgba(255, 107, 107, 0.5);
   color: #ffb3b3;
+}
+
+.btn.is-active {
+  background: rgba(0, 210, 255, 0.18);
+  border-color: rgba(0, 210, 255, 0.45);
+  color: #d6fbff;
+  box-shadow: 0 0 0 1px rgba(0, 210, 255, 0.12);
 }
 
 .toast {

@@ -55,6 +55,10 @@
             <div class="output-label">DG-LAB</div>
             <div class="output-value" id="dglab-status">--</div>
           </div>
+          <div class="output-item">
+            <div class="output-label">Nipple Dome</div>
+            <div class="output-value" id="nipple-dome-status">--</div>
+          </div>
         </div>
       </section>
 
@@ -181,6 +185,25 @@
           <div class="field">
             <label>中期最低强度<button type="button" class="help-btn" data-help-title="中期最低强度" data-help="MIDDLE 状态强度随压力逼近临界时的下限值(默认 5)。越过临界仍会瞬间降为 0。">?</button></label>
             <input id="game-mid-min" type="number" min="0" max="255" step="0.1" />
+          </div>
+          <div class="field">
+            <label>Nipple Dome 启用<button type="button" class="help-btn" data-help-title="Nipple Dome 启用" data-help="启用后，游戏强度会额外驱动 Nipple Dome 通道，并按固定周期正反切换。">?</button></label>
+            <select id="game-nipple-dome-enabled">
+              <option value="0">关闭</option>
+              <option value="1">开启</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Nipple Dome 最低占空比 (%)<button type="button" class="help-btn" data-help-title="Nipple Dome 最低占空比" data-help="当游戏强度刚大于 0 时，Nipple Dome 输出映射到该最低占空比。">?</button></label>
+            <input id="game-nipple-dome-min" type="number" min="0" max="100" step="0.1" />
+          </div>
+          <div class="field">
+            <label>Nipple Dome 最高占空比 (%)<button type="button" class="help-btn" data-help-title="Nipple Dome 最高占空比" data-help="当游戏强度接近最大时，Nipple Dome 输出映射到该最高占空比。">?</button></label>
+            <input id="game-nipple-dome-max" type="number" min="0" max="100" step="0.1" />
+          </div>
+          <div class="field">
+            <label>Nipple Dome 切换周期 (ms)<button type="button" class="help-btn" data-help-title="Nipple Dome 切换周期" data-help="正转与反转之间的切换周期。换向前会自动插入一小段 brake。">?</button></label>
+            <input id="game-nipple-dome-period" type="number" min="100" max="5000" step="10" />
           </div>
           <div class="field dual-slider-field">
             <label>跳蛋强度1 范围 (%)<button type="button" class="help-btn" data-help-title="跳蛋强度1 范围" data-help="左侧手柄为最低输出，右侧手柄为最高输出。游戏强度会映射到该范围。">?</button></label>
@@ -332,6 +355,22 @@
                 <option value="9">9</option>
               </select>
               <button id="btn-ble-vibrate-stop" type="button" class="btn">一键停止</button>
+            </div>
+          </div>
+          <div class="field slider-field">
+            <label for="cfg-nipple-dome-duty">Nipple Dome 强度 (%)</label>
+            <div class="slider-row">
+              <input id="cfg-nipple-dome-duty" class="range-input" type="range" min="0" max="100" step="0.1" />
+              <output id="cfg-nipple-dome-duty-value" class="slider-value">0.0%</output>
+            </div>
+          </div>
+          <div class="field">
+            <label>Nipple Dome 方向</label>
+            <div class="direction-buttons">
+              <button id="btn-nipple-dome-forward" type="button" class="btn">正转</button>
+              <button id="btn-nipple-dome-reverse" type="button" class="btn">反转</button>
+              <button id="btn-nipple-dome-brake" type="button" class="btn">Brake</button>
+              <button id="btn-nipple-dome-stop" type="button" class="btn">停止</button>
             </div>
           </div>
         </div>

@@ -11,12 +11,13 @@
 #include "act_pwm_ledc.h"
 #include "dglab_socket.h"
 #include "led_strip.h"
+#include "nipple_dome.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define GAME_CONFIG_VERSION 6
+#define GAME_CONFIG_VERSION 7
 #define GAME_PRESSURE_HISTORY_LEN 60
 
 typedef enum {
@@ -45,6 +46,10 @@ typedef struct {
     float mid_min_intensity;
     uint16_t pwm_max_permille[4];
     uint16_t pwm_min_permille[4];
+    bool nipple_dome_enabled;
+    uint16_t nipple_dome_min_permille;
+    uint16_t nipple_dome_max_permille;
+    uint32_t nipple_dome_switch_period_ms;
 } game_config_t;
 
 typedef struct {
@@ -79,11 +84,14 @@ typedef struct {
     uint32_t edging_count;
     uint32_t total_denied_times;
     float total_stimulation_time_s;
+    bool nipple_dome_enabled;
+    nipple_dome_status_t nipple_dome;
 } game_status_t;
 
 typedef struct {
     pwm_ledc_t *pwm;
     dglab_socket_t *dglab;
+    nipple_dome_t *nipple_dome;
     SemaphoreHandle_t i2c_mutex;
     led_strip_handle_t led;
 } game_engine_hw_t;

@@ -25,6 +25,7 @@
 #include "ble_belt.h"
 #include "dglab_socket.h"
 #include "game_engine.h"
+#include "nipple_dome.h"
 
 #include "control_api.h"
 #include "telemetry.h"
@@ -42,6 +43,8 @@ static const char *TAG = "app";
 #define M1_GPIO             GPIO_NUM_11
 #define M2_GPIO             GPIO_NUM_12
 #define M3_GPIO             GPIO_NUM_13
+#define NIPPLE_DOME_FWD_GPIO GPIO_NUM_16
+#define NIPPLE_DOME_REV_GPIO GPIO_NUM_17
 #define STATUS_LED_GPIO     GPIO_NUM_1
 #define STATUS_LED_COUNT    2
 
@@ -53,6 +56,7 @@ static bus_i2c_t s_i2c = {0};
 static mcp_h11_t s_mcp = {0};
 static pwm_ledc_t s_pwm = {0};
 static dglab_socket_t s_dglab = {0};
+static nipple_dome_t s_nipple_dome = {0};
 static control_service_t s_service;
 static telemetry_t s_telemetry;
 static telemetry_point_t *s_telemetry_buf = NULL;
@@ -64,6 +68,7 @@ static TaskHandle_t s_boot_led_task = NULL;
 
 static esp_err_t status_led_init(void);
 static void status_led_set(uint8_t r, uint8_t g, uint8_t b);
+static void nipple_dome_task(void *arg);
 #if CONFIG_APP_MEMORY_LOG_ENABLE
 static void memory_log_task(void *arg);
 #endif
@@ -307,7 +312,25 @@ static esp_err_t app_init_devices(void)
     ESP_RETURN_ON_ERROR(pwm_ledc_init(&s_pwm, &pwm_cfg), TAG, "pwm init failed");
 
     ESP_RETURN_ON_ERROR(ble_belt_init(), TAG, "ble init failed");
+    nipple_dome_config_t nipple_dome_cfg = {
+        .gpio_fwd = NIPPLE_DOME_FWD_GPIO,
+        .gpio_rev = NIPPLE_DOME_REV_GPIO,
+        .pwm_hz = 20000,
+        .brake_ms = 20,
+    };
+    ESP_RETURN_ON_ERROR(nipple_dome_init(&s_nipple_dome, &nipple_dome_cfg), TAG, "nipple dome init failed");
     return ESP_OK;
+}
+
+static void nipple_dome_task(void *arg)
+{
+    nipple_dome_t *dome = (nipple_dome_t *)arg;
+    while (1) {
+        if (dome) {
+            nipple_dome_update(dome, esp_timer_get_time() / 1000);
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 }
 
 static esp_err_t spiffs_init(void)
@@ -479,9 +502,12 @@ void app_start(void)
     for (int i = 0; i < 4; i++) {
         cfg.pwm_permille[i] = 0;
     }
+    cfg.nipple_dome.mode = NIPPLE_DOME_DIRECTION_STOP;
+    cfg.nipple_dome.duty_permille = 0;
 
     control_service_hw_t hw = {
         .pwm = &s_pwm,
+        .nipple_dome = &s_nipple_dome,
     };
     ESP_ERROR_CHECK(control_service_init(&s_service, &hw, &cfg));
 
@@ -494,6 +520,7 @@ void app_start(void)
     game_engine_hw_t game_hw = {
         .pwm = &s_pwm,
         .dglab = &s_dglab,
+        .nipple_dome = &s_nipple_dome,
         .i2c_mutex = s_i2c_mutex,
         .led = s_led,
     };
@@ -537,6 +564,7 @@ void app_start(void)
 
     xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 5, NULL);
     xTaskCreate(led_task, "led_task", 2048, NULL, 4, NULL);
+    xTaskCreate(nipple_dome_task, "nipple_dome", 3072, &s_nipple_dome, 4, NULL);
 #if CONFIG_APP_MEMORY_LOG_ENABLE
     xTaskCreate(memory_log_task, "memory_log_task", 3072, NULL, 1, NULL);
 #endif

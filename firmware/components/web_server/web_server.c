@@ -20,7 +20,7 @@ static const char *TAG = "web_server";
 
 #define WS_MAX_CLIENTS 4
 #define MAX_POST_BODY  2048
-#define WS_PUSH_MSG_MAX 1536
+#define WS_PUSH_MSG_MAX 3072
 
 static httpd_handle_t s_server = NULL;
 static web_server_ctx_t s_ctx = {0};
@@ -33,6 +33,21 @@ static float clampf(float v, float lo, float hi)
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+static cJSON *nipple_dome_status_to_json(const nipple_dome_status_t *st)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        return NULL;
+    }
+    cJSON_AddStringToObject(root, "mode", nipple_dome_mode_to_string(st->mode));
+    cJSON_AddStringToObject(root, "direction", nipple_dome_direction_to_string(st->direction));
+    cJSON_AddNumberToObject(root, "duty_permille", st->duty_permille);
+    cJSON_AddBoolToObject(root, "auto_enabled", st->auto_enabled);
+    cJSON_AddNumberToObject(root, "switch_period_ms", st->switch_period_ms);
+    cJSON_AddNumberToObject(root, "last_switch_ms", (double)st->last_switch_ms);
+    return root;
 }
 
 static void apply_game_outputs_to_status(control_status_t *st, const game_status_t *gst, const game_config_t *cfg)
@@ -70,6 +85,8 @@ static void apply_game_outputs_to_status(control_status_t *st, const game_status
         st->ble_swing = 0;
     }
     st->ble_vibrate = (ratio > 0.0f) ? 3 : 0;
+    st->nipple_dome = gst->nipple_dome;
+    st->nipple_dome.auto_enabled = gst->nipple_dome.auto_enabled;
 }
 
 static void ws_clients_init(void)
@@ -197,6 +214,11 @@ static cJSON *config_to_json(const control_config_t *cfg)
     cJSON_AddNumberToObject(ble, "vibrate", cfg->ble_vibrate);
     cJSON_AddItemToObject(root, "ble", ble);
 
+    cJSON *nipple_dome = cJSON_CreateObject();
+    cJSON_AddStringToObject(nipple_dome, "mode", nipple_dome_direction_to_string(cfg->nipple_dome.mode));
+    cJSON_AddNumberToObject(nipple_dome, "duty_permille", cfg->nipple_dome.duty_permille);
+    cJSON_AddItemToObject(root, "nipple_dome", nipple_dome);
+
     return root;
 }
 
@@ -225,6 +247,13 @@ static cJSON *status_to_json(const control_status_t *st)
     cJSON_AddNumberToObject(ble, "swing", st->ble_swing);
     cJSON_AddNumberToObject(ble, "vibrate", st->ble_vibrate);
     cJSON_AddItemToObject(root, "ble", ble);
+
+    cJSON *nipple_dome = nipple_dome_status_to_json(&st->nipple_dome);
+    if (!nipple_dome) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON_AddItemToObject(root, "nipple_dome", nipple_dome);
 
     return root;
 }
@@ -301,6 +330,10 @@ static cJSON *game_config_to_json(const game_config_t *cfg)
     cJSON_AddNumberToObject(root, "shockWaveformPreset", cfg->shock_waveform_preset);
     cJSON_AddNumberToObject(root, "midPressure", cfg->mid_pressure_kpa);
     cJSON_AddNumberToObject(root, "midMinIntensity", cfg->mid_min_intensity);
+    cJSON_AddBoolToObject(root, "nippleDomeEnabled", cfg->nipple_dome_enabled);
+    cJSON_AddNumberToObject(root, "nippleDomeMinPermille", cfg->nipple_dome_min_permille);
+    cJSON_AddNumberToObject(root, "nippleDomeMaxPermille", cfg->nipple_dome_max_permille);
+    cJSON_AddNumberToObject(root, "nippleDomeSwitchPeriodMs", cfg->nipple_dome_switch_period_ms);
 
     cJSON *pwm = cJSON_CreateArray();
     for (int i = 0; i < 4; i++) {
@@ -339,6 +372,20 @@ static cJSON *game_status_to_json(const game_status_t *st)
     cJSON_AddNumberToObject(root, "maxPressure", st->max_pressure);
     cJSON_AddNumberToObject(root, "minPressure", st->min_pressure);
     cJSON_AddBoolToObject(root, "isShocking", st->is_shocking);
+
+    cJSON *nipple_dome = cJSON_CreateObject();
+    if (!nipple_dome) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON_AddBoolToObject(nipple_dome, "enabled", st->nipple_dome_enabled);
+    cJSON_AddStringToObject(nipple_dome, "mode", nipple_dome_mode_to_string(st->nipple_dome.mode));
+    cJSON_AddStringToObject(nipple_dome, "direction", nipple_dome_direction_to_string(st->nipple_dome.direction));
+    cJSON_AddNumberToObject(nipple_dome, "dutyPermille", st->nipple_dome.duty_permille);
+    cJSON_AddBoolToObject(nipple_dome, "autoEnabled", st->nipple_dome.auto_enabled);
+    cJSON_AddNumberToObject(nipple_dome, "switchPeriodMs", st->nipple_dome.switch_period_ms);
+    cJSON_AddNumberToObject(nipple_dome, "lastSwitchMs", (double)st->nipple_dome.last_switch_ms);
+    cJSON_AddItemToObject(root, "nippleDome", nipple_dome);
     return root;
 }
 
@@ -399,6 +446,30 @@ static bool json_get_string(cJSON *obj, const char *name, const char **out)
     if (item && cJSON_IsString(item)) {
         *out = cJSON_GetStringValue(item);
         return *out != NULL;
+    }
+    return false;
+}
+
+static bool parse_nipple_dome_direction(const char *value, nipple_dome_direction_t *out)
+{
+    if (!value || !out) {
+        return false;
+    }
+    if (strcmp(value, "stop") == 0) {
+        *out = NIPPLE_DOME_DIRECTION_STOP;
+        return true;
+    }
+    if (strcmp(value, "forward") == 0) {
+        *out = NIPPLE_DOME_DIRECTION_FORWARD;
+        return true;
+    }
+    if (strcmp(value, "reverse") == 0) {
+        *out = NIPPLE_DOME_DIRECTION_REVERSE;
+        return true;
+    }
+    if (strcmp(value, "brake") == 0) {
+        *out = NIPPLE_DOME_DIRECTION_BRAKE;
+        return true;
     }
     return false;
 }
@@ -464,6 +535,23 @@ static esp_err_t parse_config_body(const char *body,
         }
         if (json_get_number(ble, "vibrate", &val)) {
             cfg->ble_vibrate = (uint8_t)val;
+        }
+    }
+
+    cJSON *nipple_dome = cJSON_GetObjectItem(root, "nipple_dome");
+    if (nipple_dome && cJSON_IsObject(nipple_dome)) {
+        const char *mode = NULL;
+        if (json_get_string(nipple_dome, "mode", &mode) && mode) {
+            nipple_dome_direction_t direction = NIPPLE_DOME_DIRECTION_STOP;
+            if (!parse_nipple_dome_direction(mode, &direction)) {
+                snprintf(err_msg, err_len, "invalid nipple_dome.mode");
+                cJSON_Delete(root);
+                return ESP_ERR_INVALID_ARG;
+            }
+            cfg->nipple_dome.mode = direction;
+        }
+        if (json_get_number(nipple_dome, "duty_permille", &val)) {
+            cfg->nipple_dome.duty_permille = (uint16_t)val;
         }
     }
 
@@ -546,6 +634,19 @@ static esp_err_t parse_game_config_body(const char *body,
     }
     if (json_get_number(root, "midMinIntensity", &val)) {
         cfg->mid_min_intensity = (float)val;
+    }
+    bool nipple_dome_enabled = cfg->nipple_dome_enabled;
+    if (json_get_bool(root, "nippleDomeEnabled", &nipple_dome_enabled)) {
+        cfg->nipple_dome_enabled = nipple_dome_enabled;
+    }
+    if (json_get_number(root, "nippleDomeMinPermille", &val)) {
+        cfg->nipple_dome_min_permille = (uint16_t)val;
+    }
+    if (json_get_number(root, "nippleDomeMaxPermille", &val)) {
+        cfg->nipple_dome_max_permille = (uint16_t)val;
+    }
+    if (json_get_number(root, "nippleDomeSwitchPeriodMs", &val)) {
+        cfg->nipple_dome_switch_period_ms = (uint32_t)val;
     }
 
     cJSON *pwm = cJSON_GetObjectItem(root, "pwmMaxPermille");
@@ -1125,16 +1226,39 @@ static esp_err_t handle_ws(httpd_req_t *req)
     return ESP_OK;
 }
 
+static cJSON *ws_payload_to_json(const control_status_t *st,
+                                 const dglab_status_t *dst,
+                                 const game_status_t *gst)
+{
+    if (!st || !dst || !gst) {
+        return NULL;
+    }
+
+    cJSON *root = status_to_json(st);
+    if (!root) {
+        return NULL;
+    }
+    cJSON_AddNumberToObject(root, "ts", (double)st->timestamp_ms);
+
+    cJSON *dglab = dglab_status_to_json(dst);
+    if (!dglab) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON_AddItemToObject(root, "dglab", dglab);
+
+    cJSON *game = game_status_to_json(gst);
+    if (!game) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    cJSON_AddItemToObject(root, "game", game);
+    return root;
+}
+
 static void ws_push_task(void *arg)
 {
     (void)arg;
-    char *msg = heap_caps_malloc(WS_PUSH_MSG_MAX, MALLOC_CAP_8BIT);
-    if (!msg) {
-        ESP_LOGE(TAG, "ws_push buffer alloc failed");
-        vTaskDelete(NULL);
-        return;
-    }
-
     while (1) {
         control_config_t cfg = {0};
         control_service_get_config(s_ctx.control, &cfg);
@@ -1164,54 +1288,26 @@ static void ws_push_task(void *arg)
         if (s_ctx.dglab) {
             dglab_socket_get_status(s_ctx.dglab, &dst);
         }
-        int len = snprintf(msg, WS_PUSH_MSG_MAX,
-                           "{\"ts\":%lld,\"pressure_kpa\":%.3f,\"temp_c\":%.2f,"
-                           "\"sensor_status\":%u,\"pwm\":[%u,%u,%u,%u],\"ble\":{\"swing\":%u,\"vibrate\":%u},"
-                           "\"dglab\":{\"serverUrl\":\"%s\",\"connectionState\":\"%s\",\"websocketConnected\":%s,"
-                           "\"paired\":%s,\"autoDisabled\":%s,\"clientId\":\"%s\",\"targetId\":\"%s\",\"qrText\":\"%s\","
-                           "\"lastErrorCode\":\"%s\",\"lastErrorText\":\"%s\",\"connectFailCount\":%u,\"lastHeartbeatMs\":%lld},"
-                           "\"game\":{\"running\":%s,\"paused\":%s,\"state\":\"%s\","
-                           "\"currentPressure\":%.3f,\"averagePressure\":%.3f,\"currentIntensity\":%.2f,"
-                           "\"targetIntensity\":%.2f,\"midPressure\":%.3f,\"criticalPressure\":%.3f,"
-                           "\"midIntensity\":%.2f,\"edgingCount\":%" PRIu32 ",\"shockCount\":%" PRIu32 ","
-                           "\"totalStimulationTime\":%.1f,\"isShocking\":%s}}",
-                           (long long)st.timestamp_ms,
-                           st.pressure_kpa,
-                           st.temp_c,
-                           st.sensor_status,
-                           st.pwm_permille[0], st.pwm_permille[1], st.pwm_permille[2], st.pwm_permille[3],
-                           st.ble_swing,
-                           st.ble_vibrate,
-                           dst.server_url,
-                           dglab_connection_state_to_string(dst.connection_state),
-                           dst.websocket_connected ? "true" : "false",
-                           dst.paired ? "true" : "false",
-                           dst.auto_disabled ? "true" : "false",
-                           dst.client_id,
-                           dst.target_id,
-                           dst.qr_text,
-                           dst.last_error_code,
-                           dst.last_error_text,
-                           (unsigned)dst.connect_fail_count,
-                           (long long)dst.last_heartbeat_ms,
-                           gst.running ? "true" : "false",
-                           gst.paused ? "true" : "false",
-                           game_state_to_string(gst.state),
-                           gst.current_pressure,
-                           gst.average_pressure,
-                           gst.current_intensity,
-                           gst.target_intensity,
-                           gcfg.mid_pressure_kpa,
-                           gcfg.critical_pressure_kpa,
-                           gst.mid_intensity,
-                           gst.edging_count,
-                           gst.shock_count,
-                           gst.total_stimulation_time_s,
-                           gst.is_shocking ? "true" : "false");
-        if (len > 0 && len < WS_PUSH_MSG_MAX) {
-            ws_broadcast(msg);
-        } else if (len >= WS_PUSH_MSG_MAX) {
-            ESP_LOGW(TAG, "ws push payload truncated: len=%d cap=%d", len, WS_PUSH_MSG_MAX);
+
+        cJSON *root = ws_payload_to_json(&st, &dst, &gst);
+        if (root) {
+            cJSON *game = cJSON_GetObjectItem(root, "game");
+            if (game) {
+                cJSON_AddNumberToObject(game, "midPressure", gcfg.mid_pressure_kpa);
+                cJSON_AddNumberToObject(game, "criticalPressure", gcfg.critical_pressure_kpa);
+            }
+            char *msg = cJSON_PrintUnformatted(root);
+            cJSON_Delete(root);
+            if (msg) {
+                size_t len = strlen(msg);
+                if (len < WS_PUSH_MSG_MAX) {
+                    ws_broadcast(msg);
+                } else {
+                    ESP_LOGW(TAG, "ws push payload truncated: len=%u cap=%u",
+                             (unsigned)len, (unsigned)WS_PUSH_MSG_MAX);
+                }
+                free(msg);
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(1000 / ws_hz));

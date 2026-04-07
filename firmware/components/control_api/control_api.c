@@ -31,6 +31,20 @@ typedef struct {
     control_config_t cfg;
 } control_config_blob_t;
 
+static void refresh_nipple_dome_status(control_service_t *svc)
+{
+    if (!svc) {
+        return;
+    }
+    if (svc->hw.nipple_dome) {
+        nipple_dome_get_status(svc->hw.nipple_dome, &svc->status.nipple_dome);
+    } else {
+        memset(&svc->status.nipple_dome, 0, sizeof(svc->status.nipple_dome));
+        svc->status.nipple_dome.mode = NIPPLE_DOME_MODE_DIRECT;
+        svc->status.nipple_dome.direction = NIPPLE_DOME_DIRECTION_STOP;
+    }
+}
+
 void control_config_set_defaults(control_config_t *cfg)
 {
     if (!cfg) {
@@ -43,6 +57,8 @@ void control_config_set_defaults(control_config_t *cfg)
     cfg->pwm_permille[3] = 0;
     cfg->ble_swing = 0;
     cfg->ble_vibrate = 0;
+    cfg->nipple_dome.mode = NIPPLE_DOME_DIRECTION_STOP;
+    cfg->nipple_dome.duty_permille = 0;
     cfg->sample_hz = 25;
     cfg->ws_hz = 5;
     cfg->window_sec = 60;
@@ -88,6 +104,13 @@ esp_err_t control_config_validate(const control_config_t *cfg, char *err_msg, si
     }
     if (cfg->ble_vibrate > CONTROL_BLE_MAX) {
         return validate_range_bool(false, "ble_vibrate out of range", err_msg, err_len);
+    }
+    if (cfg->nipple_dome.mode < NIPPLE_DOME_DIRECTION_STOP ||
+        cfg->nipple_dome.mode > NIPPLE_DOME_DIRECTION_BRAKE) {
+        return validate_range_bool(false, "nipple_dome.mode out of range", err_msg, err_len);
+    }
+    if (cfg->nipple_dome.duty_permille > CONTROL_PWM_MAX) {
+        return validate_range_bool(false, "nipple_dome.duty_permille out of range", err_msg, err_len);
     }
     return ESP_OK;
 }
@@ -173,6 +196,16 @@ static esp_err_t apply_outputs_locked(control_service_t *svc, const control_conf
     ESP_LOGI(TAG, "io: ble vibrate=%u", cfg->ble_vibrate);
 #endif
 
+    if (svc->hw.nipple_dome) {
+        err = nipple_dome_set_direct(svc->hw.nipple_dome,
+                                     cfg->nipple_dome.mode,
+                                     cfg->nipple_dome.duty_permille);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "nipple_dome send failed: %s", esp_err_to_name(err));
+        }
+    }
+    refresh_nipple_dome_status(svc);
+
     return ESP_OK;
 }
 
@@ -183,6 +216,15 @@ static void update_status_from_config(control_status_t *st, const control_config
     }
     st->ble_swing = cfg->ble_swing;
     st->ble_vibrate = cfg->ble_vibrate;
+    st->nipple_dome.mode = NIPPLE_DOME_MODE_DIRECT;
+    st->nipple_dome.direction = cfg->nipple_dome.mode;
+    st->nipple_dome.duty_permille = (cfg->nipple_dome.mode == NIPPLE_DOME_DIRECTION_FORWARD ||
+                                     cfg->nipple_dome.mode == NIPPLE_DOME_DIRECTION_REVERSE)
+                                        ? cfg->nipple_dome.duty_permille
+                                        : 0;
+    st->nipple_dome.auto_enabled = false;
+    st->nipple_dome.switch_period_ms = 0;
+    st->nipple_dome.last_switch_ms = 0;
     st->sample_hz = cfg->sample_hz;
     st->ws_hz = cfg->ws_hz;
     st->window_sec = cfg->window_sec;
@@ -242,6 +284,7 @@ void control_service_get_status(control_service_t *svc, control_status_t *out)
     if (xSemaphoreTake(svc->lock, portMAX_DELAY) != pdTRUE) {
         return;
     }
+    refresh_nipple_dome_status(svc);
     *out = svc->status;
     xSemaphoreGive(svc->lock);
 }

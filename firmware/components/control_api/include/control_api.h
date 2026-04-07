@@ -10,18 +10,25 @@
 
 #include "act_pwm_ledc.h"
 #include "ble_belt.h"
+#include "nipple_dome.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define CONTROL_CONFIG_VERSION 3
+#define CONTROL_CONFIG_VERSION 4
+
+typedef struct {
+    nipple_dome_direction_t mode;
+    uint16_t duty_permille;
+} control_nipple_dome_config_t;
 
 typedef struct {
     float pressure_threshold_kpa;
     uint16_t pwm_permille[4];       // 0..1000
     uint8_t ble_swing;              // 0..10
     uint8_t ble_vibrate;            // 0..10
+    control_nipple_dome_config_t nipple_dome;
     uint32_t sample_hz;             // sensor sampling rate
     uint32_t ws_hz;                 // websocket push rate
     uint32_t window_sec;            // chart window in seconds
@@ -35,6 +42,7 @@ typedef struct {
     uint16_t pwm_permille[4];
     uint8_t ble_swing;
     uint8_t ble_vibrate;
+    nipple_dome_status_t nipple_dome;
     uint32_t sample_hz;
     uint32_t ws_hz;
     uint32_t window_sec;
@@ -44,6 +52,7 @@ typedef struct {
 
 typedef struct {
     pwm_ledc_t *pwm;
+    nipple_dome_t *nipple_dome;
 } control_service_hw_t;
 
 typedef struct control_service {

@@ -25,6 +25,21 @@ typedef struct {
     game_config_t cfg;
 } game_config_blob_t;
 
+static void game_refresh_nipple_dome_status_locked(game_engine_t *g)
+{
+    if (!g) {
+        return;
+    }
+    g->status.nipple_dome_enabled = g->config.nipple_dome_enabled;
+    if (g->hw.nipple_dome) {
+        nipple_dome_get_status(g->hw.nipple_dome, &g->status.nipple_dome);
+    } else {
+        memset(&g->status.nipple_dome, 0, sizeof(g->status.nipple_dome));
+        g->status.nipple_dome.mode = NIPPLE_DOME_MODE_DIRECT;
+        g->status.nipple_dome.direction = NIPPLE_DOME_DIRECTION_STOP;
+    }
+}
+
 static float clampf(float v, float lo, float hi)
 {
     if (v < lo) return lo;
@@ -63,6 +78,10 @@ void game_config_set_defaults(game_config_t *cfg)
         cfg->pwm_max_permille[i] = 500;
         cfg->pwm_min_permille[i] = 50;
     }
+    cfg->nipple_dome_enabled = false;
+    cfg->nipple_dome_min_permille = 650;
+    cfg->nipple_dome_max_permille = 1000;
+    cfg->nipple_dome_switch_period_ms = 700;
 }
 
 static esp_err_t validate_range_bool(bool ok, const char *msg, char *err_msg, size_t err_len)
@@ -137,6 +156,18 @@ esp_err_t game_config_validate(const game_config_t *cfg, char *err_msg, size_t e
             return validate_range_bool(false, "pwm_min_permille > pwm_max_permille", err_msg, err_len);
         }
     }
+    if (cfg->nipple_dome_min_permille > 1000) {
+        return validate_range_bool(false, "nippleDomeMinPermille out of range", err_msg, err_len);
+    }
+    if (cfg->nipple_dome_max_permille > 1000) {
+        return validate_range_bool(false, "nippleDomeMaxPermille out of range", err_msg, err_len);
+    }
+    if (cfg->nipple_dome_min_permille > cfg->nipple_dome_max_permille) {
+        return validate_range_bool(false, "nippleDomeMinPermille > nippleDomeMaxPermille", err_msg, err_len);
+    }
+    if (cfg->nipple_dome_switch_period_ms < 100 || cfg->nipple_dome_switch_period_ms > 5000) {
+        return validate_range_bool(false, "nippleDomeSwitchPeriodMs out of range", err_msg, err_len);
+    }
     return ESP_OK;
 }
 
@@ -210,6 +241,10 @@ static void game_apply_outputs_off(game_engine_t *g, bool force)
     if (force || g->last_ble_vibrate != 0) {
         ble_belt_send_vibrate(0);
         g->last_ble_vibrate = 0;
+    }
+    if (g->hw.nipple_dome) {
+        nipple_dome_stop(g->hw.nipple_dome);
+        game_refresh_nipple_dome_status_locked(g);
     }
 }
 
@@ -287,7 +322,7 @@ static void game_update_shock_locked(game_engine_t *g, int64_t now_ms)
     }
 }
 
-static void game_apply_outputs_locked(game_engine_t *g)
+static void game_apply_outputs_locked(game_engine_t *g, int64_t now_ms)
 {
     if (!g) {
         return;
@@ -345,6 +380,31 @@ static void game_apply_outputs_locked(game_engine_t *g)
 #ifdef CONFIG_APP_DEBUG_IO
         ESP_LOGI(TAG, "io: ble vibrate=%u", vibrate);
 #endif
+    }
+
+    if (g->hw.nipple_dome) {
+        if (!g->config.nipple_dome_enabled || ratio <= 0.0f) {
+            nipple_dome_stop(g->hw.nipple_dome);
+        } else {
+            uint16_t duty = 0;
+            uint16_t max_permille = g->config.nipple_dome_max_permille;
+            uint16_t min_permille = g->config.nipple_dome_min_permille;
+            float span = (float)(max_permille - min_permille);
+            float mapped = (ratio * span) + (float)min_permille;
+            duty = (uint16_t)(mapped + 0.5f);
+            if (duty < min_permille) {
+                duty = min_permille;
+            }
+            if (duty > max_permille) {
+                duty = max_permille;
+            }
+            nipple_dome_set_auto(g->hw.nipple_dome,
+                                 duty,
+                                 g->config.nipple_dome_switch_period_ms,
+                                 now_ms);
+            nipple_dome_update(g->hw.nipple_dome, now_ms);
+        }
+        game_refresh_nipple_dome_status_locked(g);
     }
 
 }
@@ -566,11 +626,13 @@ esp_err_t game_engine_init(game_engine_t *g,
     g->status.paused = false;
     g->status.state = GAME_STATE_INITIAL_CALM;
     g->status.min_pressure = 999.0f;
+    g->status.nipple_dome_enabled = initial_cfg->nipple_dome_enabled;
     g->last_ble_swing = 0;
     g->last_ble_vibrate = 0;
     for (int i = 0; i < 4; i++) {
         g->last_pwm_permille[i] = 0;
     }
+    game_refresh_nipple_dome_status_locked(g);
     return ESP_OK;
 }
 
@@ -595,6 +657,11 @@ esp_err_t game_engine_set_config(game_engine_t *g, const game_config_t *cfg)
         return ESP_ERR_TIMEOUT;
     }
     g->config = *cfg;
+    g->status.nipple_dome_enabled = cfg->nipple_dome_enabled;
+    if (!cfg->nipple_dome_enabled && g->hw.nipple_dome) {
+        nipple_dome_stop(g->hw.nipple_dome);
+    }
+    game_refresh_nipple_dome_status_locked(g);
     xSemaphoreGive(g->lock);
     return ESP_OK;
 }
@@ -607,6 +674,7 @@ void game_engine_get_status(game_engine_t *g, game_status_t *out)
     if (xSemaphoreTake(g->lock, portMAX_DELAY) != pdTRUE) {
         return;
     }
+    game_refresh_nipple_dome_status_locked(g);
     *out = g->status;
     xSemaphoreGive(g->lock);
 }
@@ -667,6 +735,7 @@ void game_engine_start(game_engine_t *g, int64_t now_ms)
     g->pressure_hist_sum = 0.0f;
 
     game_apply_outputs_off(g, true);
+    game_refresh_nipple_dome_status_locked(g);
     xSemaphoreGive(g->lock);
 }
 
@@ -683,6 +752,7 @@ void game_engine_stop(game_engine_t *g)
     g->status.is_shocking = false;
     game_apply_outputs_off(g, true);
     g->shock_end_time_ms = 0;
+    game_refresh_nipple_dome_status_locked(g);
     xSemaphoreGive(g->lock);
 }
 
@@ -695,6 +765,10 @@ void game_engine_set_paused(game_engine_t *g, bool paused)
         return;
     }
     g->status.paused = paused;
+    if (paused && g->hw.nipple_dome) {
+        nipple_dome_stop(g->hw.nipple_dome);
+        game_refresh_nipple_dome_status_locked(g);
+    }
     xSemaphoreGive(g->lock);
 }
 
@@ -706,11 +780,11 @@ void game_engine_trigger_shock(game_engine_t *g, bool force)
     if (xSemaphoreTake(g->lock, portMAX_DELAY) != pdTRUE) {
         return;
     }
+    int64_t now_ms = esp_timer_get_time() / 1000;
     if (force) {
-        int64_t now_ms = esp_timer_get_time() / 1000;
         game_trigger_shock_locked(g, true, now_ms);
     }
-    game_apply_outputs_locked(g);
+    game_apply_outputs_locked(g, now_ms);
     xSemaphoreGive(g->lock);
 }
 
@@ -739,6 +813,7 @@ void game_engine_on_sample(game_engine_t *g, float pressure_kpa, int64_t now_ms)
             g->status.paused = false;
             g->status.is_shocking = false;
             g->shock_end_time_ms = 0;
+            game_refresh_nipple_dome_status_locked(g);
             xSemaphoreGive(g->lock);
             return;
         }
@@ -746,7 +821,10 @@ void game_engine_on_sample(game_engine_t *g, float pressure_kpa, int64_t now_ms)
         game_calculate_state_locked(g, now_ms);
         game_update_intensity_locked(g, now_ms);
         game_update_shock_locked(g, now_ms);
-        game_apply_outputs_locked(g);
+        game_apply_outputs_locked(g, now_ms);
+    } else if (g->hw.nipple_dome) {
+        nipple_dome_update(g->hw.nipple_dome, now_ms);
+        game_refresh_nipple_dome_status_locked(g);
     }
 
     xSemaphoreGive(g->lock);
